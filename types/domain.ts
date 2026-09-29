@@ -1,5 +1,9 @@
 export type Role = "student" | "faculty" | "hod" | "admin";
 export type ODStatus =
+  | "PENDING_FACULTY"
+  | "REJECTED_BY_FACULTY"
+  | "PENDING_HOD"
+  | "REJECTED_BY_HOD"
   | "DRAFT"
   | "SUBMITTED"
   | "FACULTY_REVIEW"
@@ -104,7 +108,44 @@ export type Notification = {
 
 export type ODRecord = ODApplication & {
   student: Profile;
+  requester?: Profile;
+  odStudents?: Profile[];
+  odStudentIds?: string[];
+  eventType?: string;
+  organization?: string;
+  eventDate?: string;
+  startTime?: string;
+  endTime?: string;
+  venue?: string;
+  facultyId?: string;
+  facultyActionAt?: string;
+  facultyRemarks?: string;
+  hodId?: string;
+  hodActionAt?: string;
+  hodRemarks?: string;
+  requesterRemarks?: string;
+  potentialDuplicate?: boolean;
+  attendance?: ODAttendance[];
+  approvalHistory?: ODApprovalHistory[];
   periods: ODPeriod[];
   approvals: (FacultyApproval & { faculty: Profile })[];
   specialPermission?: SpecialPermission;
+};
+
+export type ODAttendance = {
+  id: string;
+  odRequestId: string;
+  studentId: string;
+  status: "PRESENT" | "ABSENT";
+  markedBy: string;
+  markedAt: string;
+};
+
+export type ODApprovalHistory = {
+  id: string;
+  actor?: Profile;
+  role: Role;
+  action: string;
+  remarks?: string;
+  createdAt: string;
 };

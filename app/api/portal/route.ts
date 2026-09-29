@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAuthenticatedUser } from "@/lib/auth";
 import { AppError, publicError } from "@/lib/errors";
-import { notificationFromRow, profileFromRow, recordFromRow } from "@/lib/portal-data";
+import { notificationFromRow, profileFromRow, recordFromRequestRow } from "@/lib/portal-data";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export async function GET() {
@@ -9,9 +9,9 @@ export async function GET() {
     const profile = await requireAuthenticatedUser();
     const supabase = await createSupabaseServerClient();
     const [applicationsResult, facultyResult, limitsResult, notificationsResult] = await Promise.all([
-      supabase.from("od_applications").select("*, student:profiles!student_id(*, department:departments(code)), od_periods(*), od_faculty_approvals(*, faculty:profiles!faculty_id(*, department:departments(code))), special_permissions(*)").order("created_at", { ascending: false }).limit(100),
-      supabase.from("profiles").select("*, department:departments(code)").eq("role", "faculty").eq("is_active", true).order("name"),
-      supabase.from("od_limits").select("category, limit_count, academic_year, is_active").eq("is_active", true),
+      supabase.from("od_requests").select("*, requester:profiles!requester_id(id,name:full_name,role,department_id,register_number,section,designation,department:departments(code)), od_request_students(student_id,student:profiles!student_id(id,name:full_name,role,department_id,register_number,section,designation,department:departments(code))), od_request_faculty(id,od_request_id,faculty_id,status,comment:remarks,action_at,created_at,faculty:profiles!faculty_id(id,name:full_name,role,department_id,designation,department:departments(code))), od_attendance(*), od_approval_history(id,actor_id,actor_role,action,remarks,created_at,actor:profiles!actor_id(id,name:full_name,role,department_id,designation))").order("created_at", { ascending: false }).limit(200),
+      supabase.from("profiles").select("id,name:full_name,role,department_id,designation,is_active,department:departments(code)").eq("role", "faculty").eq("is_active", true).order("full_name"),
+      supabase.from("od_limits").select("category, limit_count, academic_year:academic_years(name), is_active").eq("is_active", true),
       supabase.from("notifications").select("*").order("created_at", { ascending: false }).limit(50)
     ]);
     if (applicationsResult.error || facultyResult.error || limitsResult.error || notificationsResult.error) throw new AppError("DATABASE_ERROR", "Portal data could not be loaded.");
@@ -20,12 +20,13 @@ export async function GET() {
     return NextResponse.json({
       currentUser: profileFromRow({ ...profile, department_code: departmentResult.data?.code }),
       profiles: facultyResult.data.map((row) => profileFromRow(row)),
-      applications: applicationsResult.data.map((row) => recordFromRow(row)),
-      limits: limitsResult.data.map((row) => ({ category: row.category, limitCount: row.limit_count, academicYear: row.academic_year, isActive: row.is_active })),
+      applications: applicationsResult.data.map((row) => recordFromRequestRow(row)),
+      limits: limitsResult.data.map((row) => ({ category: row.category, limitCount: row.limit_count, academicYear: (row.academic_year as { name?: string } | null)?.name, isActive: row.is_active })),
       notifications: notificationsResult.data.map((row) => notificationFromRow(row))
     });
   } catch (error) {
     const issue = publicError(error);
-    return NextResponse.json(issue, { status: issue.code === "UNAUTHORIZED" ? 401 : 403 });
+    const status = issue.code === "UNAUTHORIZED" ? 401 : issue.code === "FORBIDDEN" ? 403 : 500;
+    return NextResponse.json(issue, { status, headers: { "Cache-Control": "private, no-store" } });
   }
 }

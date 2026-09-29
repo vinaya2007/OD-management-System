@@ -8,8 +8,8 @@ export default function ApplicationsPage() {
   const { currentUser, applications } = useDemo();
   return (
     <AppShell user={currentUser}>
-      <h2 className="mb-4 text-2xl font-bold text-navy">My Applications</h2>
-      <ODTable records={applications.filter((item) => item.studentId === currentUser.id)} role="student" />
+      <h2 className="mb-4 text-2xl font-bold text-navy">My ODs</h2>
+      <ODTable records={applications.filter((item) => (item.odStudentIds ?? [item.studentId]).includes(currentUser.id))} role="student" />
     </AppShell>
   );
 }

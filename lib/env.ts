@@ -18,5 +18,5 @@ export function assertSupabaseConfigured() {
 export function hasAllowedEmailDomain(email: string) {
   const normalized = email.trim().toLowerCase();
   const at = normalized.lastIndexOf("@");
-  return Boolean(env.allowedEmailDomain) && at > 0 && normalized.slice(at + 1) === env.allowedEmailDomain;
+  return env.allowedEmailDomain === "srmist.edu.in" && at > 0 && normalized.slice(at + 1) === "srmist.edu.in";
 }

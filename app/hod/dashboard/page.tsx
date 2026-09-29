@@ -13,9 +13,9 @@ export default function HodDashboard() {
     <AppShell user={currentUser}>
       <h2 className="mb-5 text-2xl font-bold text-navy">HOD Dashboard</h2>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-        <SummaryCard label="Pending HOD" value={ece.filter((item) => item.status === "HOD_REVIEW").length} icon={Clock} tone="amber" />
-        <SummaryCard label="Approved today" value={ece.filter((item) => item.status === "APPROVED").length} icon={CheckCircle2} tone="green" />
-        <SummaryCard label="Rejected" value={ece.filter((item) => item.status === "REJECTED").length} icon={XCircle} tone="red" />
+        <SummaryCard label="Pending HOD" value={ece.filter((item) => item.status === "PENDING_HOD").length} icon={Clock} tone="amber" />
+        <SummaryCard label="Approved ODs" value={ece.filter((item) => item.status === "APPROVED").length} icon={CheckCircle2} tone="green" />
+        <SummaryCard label="Rejected" value={ece.filter((item) => ["REJECTED_BY_FACULTY", "REJECTED_BY_HOD", "REJECTED"].includes(item.status)).length} icon={XCircle} tone="red" />
         <SummaryCard label="Total approved" value={ece.filter((item) => item.status === "APPROVED").length} icon={FileText} />
         <SummaryCard label="Special ODs" value={ece.filter((item) => item.isSpecial).length} icon={ShieldAlert} tone="purple" />
       </div>
@@ -25,7 +25,7 @@ export default function HodDashboard() {
       </section>
       <section className="mt-6">
         <h3 className="mb-3 text-lg font-bold text-navy">Ready for HOD Review</h3>
-        <ODTable records={ece.filter((item) => item.status === "HOD_REVIEW")} role="hod" />
+        <ODTable records={ece.filter((item) => item.status === "PENDING_HOD")} role="hod" />
       </section>
     </AppShell>
   );

@@ -5,7 +5,6 @@ import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/AppShell";
 import { useDemo } from "@/components/od/DemoProvider";
 import { ODDetail } from "@/components/od/ODDetail";
-import { allFacultyApproved } from "@/lib/od-rules";
 
 export default function HodReviewPage() {
   const params = useParams<{ id: string }>();
@@ -14,7 +13,7 @@ export default function HodReviewPage() {
   const [reason, setReason] = useState("");
   const [error, setError] = useState("");
   const record = applications.find((item) => item.id === params.id);
-  const ready = record ? allFacultyApproved(record.approvals) : false;
+  const ready = record?.status === "PENDING_HOD";
 
   async function decide(approved: boolean) {
     setError("");
@@ -43,7 +42,7 @@ export default function HodReviewPage() {
     <AppShell user={currentUser}>
       {record ? (
         <>
-          <ODDetail record={record} faculty={[]} />
+          <ODDetail record={record} faculty={[]} viewerId={currentUser.id} viewerRole={currentUser.role} />
           {record.isSpecial && record.specialPermissionStatus === "PENDING" ? <section className="mt-5 rounded-lg border border-purple-200 bg-purple-50 p-5">
             <h3 className="font-bold text-purple-950">Special Permission Review</h3>
             <p className="mt-1 text-sm text-purple-900">This decision grants the OD limit exception only. Faculty and HOD review still apply.</p>

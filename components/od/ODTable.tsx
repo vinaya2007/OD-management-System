@@ -22,7 +22,7 @@ export function ODTable({ records, role }: { records: ODRecord[]; role: Role }) 
           <thead className="bg-slate-50 text-left text-xs font-semibold uppercase text-muted">
             <tr>
               <th className="px-4 py-3">OD ID</th>
-              <th className="px-4 py-3">Student</th>
+              <th className="px-4 py-3">Requester / OD Students</th>
               <th className="px-4 py-3">Category</th>
               <th className="px-4 py-3">Event</th>
               <th className="px-4 py-3">Period</th>
@@ -36,12 +36,14 @@ export function ODTable({ records, role }: { records: ODRecord[]; role: Role }) 
               <tr key={record.id} className="align-top">
                 <td className="px-4 py-3 font-semibold text-navy">{record.id}</td>
                 <td className="px-4 py-3">
-                  <span className="font-medium">{record.student.name}</span>
-                  <span className="block text-xs text-muted">{record.student.registerNumber} · {record.student.year}-{record.student.section}</span>
+                  <span className="font-medium">{record.requester?.name ?? record.student.name}</span>
+                  <span className="block text-xs text-muted">Requested by · {record.odStudents?.length ?? 1} OD student{(record.odStudents?.length ?? 1) === 1 ? "" : "s"}</span>
+                  {(record.odStudents ?? [record.student]).slice(0, 3).map((student) => <span key={student.id} className="block text-xs text-muted">{student.name} · {student.registerNumber} · Section {student.section}</span>)}
+                  {(record.odStudents?.length ?? 0) > 3 ? <span className="block text-xs text-muted">and {record.odStudents!.length - 3} more</span> : null}
                 </td>
                 <td className="px-4 py-3">{record.category}</td>
                 <td className="px-4 py-3">{record.eventName}</td>
-                <td className="px-4 py-3">{periodLabel(record.periods)}</td>
+              <td className="px-4 py-3">{record.eventDate ?? (record.periods.length ? periodLabel(record.periods) : record.startDate)}{record.startTime ? <span className="block text-xs text-muted">{record.startTime}–{record.endTime}</span> : null}</td>
                 <td className="px-4 py-3"><StatusBadge value={record.status} /></td>
                 <td className="px-4 py-3"><StatusBadge value={record.isSpecial ? "SPECIAL" : "REGULAR"} special={record.isSpecial} /></td>
                 <td className="px-4 py-3 text-right">

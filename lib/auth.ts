@@ -1,17 +1,23 @@
 import { redirect } from "next/navigation";
 import { AppError } from "@/lib/errors";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { hasAllowedEmailDomain } from "@/lib/env";
+import { lookupAuthenticatedProfile } from "@/lib/auth-profile";
 
 export type DatabaseRole = "student" | "faculty" | "hod" | "admin";
-export type AuthenticatedProfile = { id: string; auth_user_id: string; name: string; email: string; role: DatabaseRole; department_id: string | null; is_active: boolean };
+export type AuthenticatedProfile = { id: string; auth_user_id: string; full_name: string; name: string; email: string; role: DatabaseRole; department_id: string | null; is_active: boolean };
 
 export async function requireAuthenticatedUser(): Promise<AuthenticatedProfile> {
   const supabase = await createSupabaseServerClient();
   const { data: { user }, error: userError } = await supabase.auth.getUser();
-  if (userError || !user) throw new AppError("UNAUTHORIZED", "Please sign in to continue.");
-  const { data, error } = await supabase.from("profiles").select("id, auth_user_id, name, email, role, department_id, is_active").eq("auth_user_id", user.id).eq("is_active", true).maybeSingle();
-  if (error || !data) throw new AppError("FORBIDDEN", "Your college account is not authorized for OD Management.");
-  return data as AuthenticatedProfile;
+  if (userError || !user || !user.email_confirmed_at || !hasAllowedEmailDomain(user.email ?? "")) throw new AppError("UNAUTHORIZED", "Please sign in with a verified @srmist.edu.in account.");
+  const { profile, error } = await lookupAuthenticatedProfile(supabase, user, "server-authorization");
+  if (error) {
+    console.error("[auth:server-authorization] profile query failed", { code: error.code, message: error.message, details: error.details, hint: error.hint });
+    throw new AppError("DATABASE_ERROR", "The OD profile could not be checked. Please try again or contact the administrator.");
+  }
+  if (!profile || !profile.is_active) throw new AppError("FORBIDDEN", "Your college account is not authorized for OD Management.");
+  return profile as AuthenticatedProfile;
 }
 
 export async function requireRole(role: DatabaseRole) {

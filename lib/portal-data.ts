@@ -1,4 +1,4 @@
-import type { FacultyApprovalStatus, Notification, ODRecord, Profile } from "@/types/domain";
+import type { FacultyApprovalStatus, Notification, ODRecord, Profile, Role } from "@/types/domain";
 
 type Row = Record<string, unknown>;
 
@@ -7,7 +7,7 @@ function text(value: unknown) { return typeof value === "string" ? value : ""; }
 export function profileFromRow(row: Row): Profile {
   const department = row.department && typeof row.department === "object" ? row.department as Row : {};
   return {
-    id: text(row.id), authUserId: text(row.auth_user_id) || undefined, name: text(row.name), email: text(row.email),
+    id: text(row.id), authUserId: text(row.auth_user_id) || undefined, name: text(row.name) || text(row.full_name), email: text(row.email),
     role: text(row.role) as Profile["role"], department: text(department.code) || text(row.department_code) || text(row.department_id),
     registerNumber: text(row.register_number) || undefined, year: (text(row.year) || undefined) as Profile["year"], section: text(row.section) || undefined,
     designation: text(row.designation) || undefined, isActive: Boolean(row.is_active)
@@ -31,6 +31,36 @@ export function recordFromRow(row: Row): ODRecord {
   };
 }
 
+export function recordFromRequestRow(row: Row): ODRecord {
+  const requester = profileFromRow((row.requester as Row) ?? {});
+  const recipients = (Array.isArray(row.od_request_students) ? row.od_request_students as Row[] : [])
+    .map((entry) => profileFromRow((entry.student as Row) ?? {})).filter((profile) => profile.id);
+  const firstStudent = recipients[0] ?? requester;
+  const assigned = Array.isArray(row.od_request_faculty) ? row.od_request_faculty as Row[] : [];
+  const attendance = Array.isArray(row.od_attendance) ? row.od_attendance as Row[] : [];
+  const history = Array.isArray(row.od_approval_history) ? row.od_approval_history as Row[] : [];
+  const start = text(row.event_date);
+  return {
+    id: text(row.id), studentId: firstStudent.id, departmentId: text(row.department_id),
+    category: (text(row.event_type) || "Other") as ODRecord["category"], purpose: text(row.purpose) || undefined,
+    eventName: text(row.event_name), venueType: text(row.venue) === "Our College" ? "Our College" : "Other College",
+    collegeName: text(row.organization) || undefined, startDate: start, endDate: text(row.event_end_date) || start,
+    additionalNotes: text(row.requester_remarks) || undefined, isSpecial: false, specialPermissionStatus: "NOT_REQUIRED",
+    status: text(row.status) as ODRecord["status"], createdAt: text(row.created_at), updatedAt: text(row.updated_at),
+    student: firstStudent, requester, odStudents: recipients, odStudentIds: recipients.map((profile) => profile.id),
+    eventType: text(row.event_type), organization: text(row.organization) || undefined, eventDate: start,
+    startTime: text(row.start_time).slice(0, 5), endTime: text(row.end_time).slice(0, 5), venue: text(row.venue),
+    facultyId: text(row.faculty_id) || undefined, facultyActionAt: text(row.faculty_action_at) || undefined,
+    facultyRemarks: text(row.faculty_remarks) || undefined, hodId: text(row.hod_id) || undefined,
+    hodActionAt: text(row.hod_action_at) || undefined, hodRemarks: text(row.hod_remarks) || undefined,
+    requesterRemarks: text(row.requester_remarks) || undefined, potentialDuplicate: Boolean(row.is_potential_duplicate),
+    periods: [],
+    approvals: assigned.map((item) => ({ id: text(item.id), odId: text(item.od_request_id), facultyId: text(item.faculty_id), status: text(item.status) as FacultyApprovalStatus, comment: text(item.comment) || undefined, approvedAt: text(item.action_at) || undefined, updatedAt: text(item.action_at) || text(item.created_at), faculty: profileFromRow((item.faculty as Row) ?? {}) })),
+    attendance: attendance.map((item) => ({ id: text(item.id), odRequestId: text(item.od_request_id), studentId: text(item.student_id), status: text(item.attendance_status) as "PRESENT" | "ABSENT", markedBy: text(item.marked_by), markedAt: text(item.marked_at) })),
+    approvalHistory: history.map((item) => ({ id: text(item.id), actor: item.actor ? profileFromRow(item.actor as Row) : undefined, role: text(item.actor_role) as Role, action: text(item.action), remarks: text(item.remarks) || undefined, createdAt: text(item.created_at) }))
+  };
+}
+
 export function notificationFromRow(row: Row): Notification {
-  return { id: text(row.id), userId: text(row.user_id), odId: text(row.od_id) || undefined, type: text(row.type), title: text(row.title), message: text(row.message), isRead: Boolean(row.is_read), createdAt: text(row.created_at) };
+  return { id: text(row.id), userId: text(row.user_id), odId: text(row.od_request_id) || text(row.od_id) || undefined, type: text(row.notification_type) || text(row.type), title: text(row.title), message: text(row.message), isRead: Boolean(row.is_read), createdAt: text(row.created_at) };
 }

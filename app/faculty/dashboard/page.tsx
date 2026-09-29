@@ -20,7 +20,7 @@ export default function FacultyDashboard() {
       </div>
       <section className="mt-6">
         <h3 className="mb-3 text-lg font-bold text-navy">Pending OD Applications</h3>
-        <ODTable records={assigned.filter((item) => item.status !== "WITHDRAWN")} role="faculty" />
+        <ODTable records={assigned.filter((item) => item.status === "PENDING_FACULTY")} role="faculty" />
       </section>
     </AppShell>
   );

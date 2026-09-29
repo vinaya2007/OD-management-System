@@ -10,7 +10,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body><Providers demoEnabled={process.env.ENABLE_DEMO_AUTH === "true"} collegeName={process.env.COLLEGE_NAME || "College"} departmentName={process.env.COLLEGE_DEPARTMENT || "ECE Department"} allowedEmailDomain={process.env.ALLOWED_EMAIL_DOMAIN || ""}>{children}</Providers></body>
+      <body><Providers demoEnabled={false} collegeName={process.env.COLLEGE_NAME || "College"} departmentName={process.env.COLLEGE_DEPARTMENT || "ECE Department"} allowedEmailDomain={process.env.ALLOWED_EMAIL_DOMAIN || "srmist.edu.in"}>{children}</Providers></body>
     </html>
   );
 }

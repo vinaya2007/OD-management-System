@@ -14,10 +14,10 @@ export default function FacultyReviewPage() {
   const record = applications.find((item) => item.id === params.id);
   const ownApproval = record?.approvals.find((approval) => approval.facultyId === currentUser.id);
 
-  function decide(status: "APPROVED" | "CORRECTION_REQUESTED" | "REJECTED") {
+  function decide(status: "APPROVED" | "REJECTED") {
     if (!record || !ownApproval) return;
-    if (status !== "APPROVED" && !comment.trim()) {
-      alert(status === "REJECTED" ? "Rejection reason is required." : "Correction comment is required.");
+    if (status === "REJECTED" && !comment.trim()) {
+      alert("Rejection reason is required.");
       return;
     }
     updateFacultyApproval(record.id, currentUser.id, status, comment);
@@ -28,14 +28,13 @@ export default function FacultyReviewPage() {
     <AppShell user={currentUser}>
       {record ? (
         <>
-          <ODDetail record={record} faculty={[]} />
+          <ODDetail record={record} faculty={[]} viewerId={currentUser.id} viewerRole={currentUser.role} />
           {ownApproval ? (
             <section className="mt-5 rounded-lg border border-line bg-white p-5 shadow-soft">
               <h3 className="font-bold text-navy">Faculty Action</h3>
               <textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Comment or rejection reason" className="mt-3 min-h-24 w-full rounded-lg border border-line px-3 py-2" />
               <div className="mt-4 flex flex-wrap gap-3">
                 <button onClick={() => decide("APPROVED")} className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white">Approve</button>
-                <button onClick={() => decide("CORRECTION_REQUESTED")} className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white">Request Correction</button>
                 <button onClick={() => decide("REJECTED")} className="rounded-lg bg-red-700 px-4 py-2 text-sm font-semibold text-white">Reject</button>
               </div>
             </section>

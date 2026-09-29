@@ -10,12 +10,12 @@ import { getLimitState } from "@/lib/od-rules";
 
 export default function StudentDashboard() {
   const { currentUser, applications, limits } = useDemo();
-  const records = applications.filter((item) => item.studentId === currentUser.id);
+  const records = applications.filter((item) => (item.odStudentIds ?? [item.studentId]).includes(currentUser.id));
   const stats = {
     total: records.length,
     approved: records.filter((item) => item.status === "APPROVED").length,
-    pending: records.filter((item) => ["SUBMITTED", "FACULTY_REVIEW", "HOD_REVIEW", "CORRECTION_REQUESTED"].includes(item.status)).length,
-    rejected: records.filter((item) => item.status === "REJECTED").length,
+    pending: records.filter((item) => ["PENDING_FACULTY", "PENDING_HOD", "SUBMITTED", "FACULTY_REVIEW", "HOD_REVIEW", "CORRECTION_REQUESTED"].includes(item.status)).length,
+    rejected: records.filter((item) => ["REJECTED_BY_FACULTY", "REJECTED_BY_HOD", "REJECTED"].includes(item.status)).length,
     special: records.filter((item) => item.isSpecial).length
   };
 

@@ -17,7 +17,14 @@ export async function createSupabaseServerClient() {
         return cookieStore.getAll();
       },
       setAll(cookiesToSet: { name: string; value: string; options: CookieOptions }[]) {
-        cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options));
+        // Next.js Server Components can read request cookies but cannot write
+        // refreshed auth cookies. The Proxy and Route Handlers persist them;
+        // swallow this render-only write attempt to avoid crashing the page.
+        try {
+          cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options));
+        } catch {
+          // The current render still uses the refreshed session; Proxy persists it.
+        }
       }
     }
   });

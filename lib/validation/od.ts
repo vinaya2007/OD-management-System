@@ -4,6 +4,20 @@ export const OD_CATEGORIES = ["Technical Event", "Non-Technical Event", "Hackath
 const isoDate = z.string().date();
 const periodSchema = z.object({ date: isoDate, fromPeriod: z.number().int().min(1).max(7), toPeriod: z.number().int().min(1).max(7) }).refine((period) => period.fromPeriod <= period.toPeriod, { message: "From period must not be later than To period.", path: ["toPeriod"] });
 
+export const submitODRequestSchema = z.object({
+  id: z.string().uuid(), idempotencyKey: z.string().uuid(), eventName: z.string().trim().min(2).max(250),
+  eventType: z.string().trim().min(2).max(100), organization: z.string().trim().max(250).optional(), eventDate: isoDate,
+  startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  venue: z.string().trim().min(2).max(300), purpose: z.string().trim().max(2000).optional(), requesterRemarks: z.string().trim().max(5000).optional(),
+  studentIds: z.array(z.string().uuid()).min(1).max(50), facultyIds: z.array(z.string().uuid()).min(1).max(3)
+}).superRefine((value, context) => {
+  if (value.endTime <= value.startTime) context.addIssue({ code: "custom", path: ["endTime"], message: "End time must be after start time." });
+  if (new Set(value.studentIds).size !== value.studentIds.length) context.addIssue({ code: "custom", path: ["studentIds"], message: "OD students must be unique." });
+  if (new Set(value.facultyIds).size !== value.facultyIds.length) context.addIssue({ code: "custom", path: ["facultyIds"], message: "Faculty reviewers must be unique." });
+});
+
+export const attendanceSchema = z.object({ requestId: z.string().uuid(), studentId: z.string().uuid(), status: z.enum(["PRESENT", "ABSENT"]) });
+
 export const submitODSchema = z.object({
   idempotencyKey: z.string().uuid(), category: z.enum(OD_CATEGORIES), purpose: z.string().trim().max(2000).optional(), eventName: z.string().trim().min(2).max(250), venueType: z.enum(["Our College", "Other College"]), collegeName: z.string().trim().max(250).optional(), startDate: isoDate, endDate: isoDate, additionalNotes: z.string().trim().max(5000).optional(), periods: z.array(periodSchema).min(1).max(180), facultyIds: z.array(z.string().uuid()).min(1).max(3), specialReason: z.string().trim().min(5).max(2000).optional()
 }).superRefine((value, context) => {

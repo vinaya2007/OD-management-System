@@ -2,6 +2,7 @@ import type { FacultyApproval, ODApplication, ODLimit, ODPeriod, ODRecord, Profi
 
 export const ACTIVE_BLOCKING_STATUSES = [
   "SUBMITTED",
+  "PENDING_FACULTY",
   "FACULTY_REVIEW",
   "CORRECTION_REQUESTED",
   "FACULTY_APPROVED",
@@ -38,7 +39,7 @@ export function findOverlappingApplication(records: ODRecord[], studentId: strin
 }
 
 export function approvedUsage(records: ODRecord[], studentId: string, category: ODApplication["category"]) {
-  return records.filter((record) => record.studentId === studentId && record.category === category && record.status === "APPROVED").length;
+  return records.filter((record) => (record.odStudentIds ?? [record.studentId]).includes(studentId) && record.category === category && record.status === "APPROVED").length;
 }
 
 export function getLimitState(records: ODRecord[], limits: ODLimit[], studentId: string, category: ODApplication["category"]) {
