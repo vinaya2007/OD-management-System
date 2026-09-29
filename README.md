@@ -10,22 +10,22 @@ Next.js App Router application for managing ECE On-Duty applications. It has a d
 - `supabase/migrations/`: ordered schema and production workflow migrations.
 - `supabase/seed/seed.sql`: development fixture data; do not run it against production.
 
-Portal reads use the authenticated Supabase SSR client and RLS. OD writes use PostgreSQL RPC functions so the database checks role, ownership, assignment, status, limits, and periods. `profiles.role` is the authority; browser storage is only used for the explicitly enabled demo mode.
+Portal reads use the authenticated Supabase SSR client and RLS. OD writes use PostgreSQL RPC functions so the database checks verified identity, role, ownership, department, assignment, status, and valid workflow transitions. `profiles.role` is the authority; browser storage is only used for the explicitly enabled demo mode. Legacy period/limit/special-permission UI remains from the original application and is not enforced by the new multi-student request RPC.
 
 ## OD workflow
 
-Students submit an OD with 1–3 active faculty approvers and date/period selections. The database checks the date range, periods 1–7, faculty assignment eligibility, approved-OD limits, idempotency, and overlapping requests. Assigned faculty approve, request correction, or reject. Once all assigned faculty approve, the application enters HOD review. HOD approval checks faculty completion and blocks special ODs until special permission is approved. Students can withdraw eligible in-review requests and replace a pending faculty assignment.
+Requests are parent records in `od_requests`; their requester is independent from the one-or-more OD students in `od_request_students`. Students search existing ECE student profiles through `search_ece_students`; the submit RPC validates every recipient and faculty reviewer against active same-department profiles. Students see their own participation history and separately see requests they submitted. A faculty reviewer assigned to the request moves the whole request from `PENDING_FACULTY` to `PENDING_HOD` or rejects it. An authorized HOD makes the final `APPROVED`/`REJECTED_BY_HOD` decision. `od_attendance` stores one attendance row per request/student. Approval actions and notifications are written by database functions.
 
-Special permission is an exception to the approved-OD limit; it does not replace faculty or HOD review. The SQL workflow requires an authorized same-department HOD/admin decision. Configure a narrower named approver policy before production if college governance requires one.
+The former period-based special-permission flow belongs to the legacy OD schema; it is not part of the new parent/child workflow. Do not use it for production decisions until it is migrated to the new request model.
 
 ## Authentication and profile provisioning
 
-Production authentication uses Supabase Auth Google OAuth. The callback checks the exact configured email domain and then looks for an active `profiles.auth_user_id` link. Missing/inactive profiles receive an account setup message and are never assigned a default role.
+Email/password signup and Google OAuth use Supabase Auth. The auth trigger rejects non-`@srmist.edu.in` identities and creates only a student profile; frontend role metadata is ignored. Google users without a complete student profile are directed to profile completion. The callback requires a confirmed email and the exact college domain. The `complete_student_profile` RPC validates register number/section and fixes the department to ECE.
 
-Provision users through the Supabase Dashboard or an approved identity import process:
+Faculty/HOD roles must be granted through a trusted Supabase admin/database operation after verifying the person's institutional authorization. For example, a privileged operator may change `profiles.role` for the exact Auth-linked profile in the Supabase SQL editor; never expose this operation through student UI or client code. Confirm `department_id`, `is_active`, email, and `auth_user_id` at the same time. Student accounts self-provision only through the signup/Google flow.
 
-1. Invite/create the user in Supabase Auth with the college email address.
-2. Create a profile through the trusted admin provisioning process, using that Auth user's UUID as `auth_user_id` and the approved role/department/class details.
+1. Create/verify the account using the student signup flow for students, or provision/invite through the approved identity process for staff.
+2. For staff only, link the Auth UUID to the existing profile and grant the authorized role through the privileged admin channel.
 3. Verify the account is active, the email matches, the department is active, and role assignment was approved.
 4. Sign in and confirm the account reaches only its assigned role dashboard.
 
@@ -48,10 +48,10 @@ For local UI exploration only, set `ENABLE_DEMO_AUTH=true` in `.env.local`. Demo
 3. In **Authentication → Providers → Google**, enable Google and copy the Supabase callback URL shown there.
 4. In Google Cloud Console, create an OAuth 2.0 Web application credential. Add the Supabase callback URL as an authorized redirect URI. Add `http://localhost:3000` and the production site origin as authorized JavaScript origins. Configure the consent screen and publish/allow the college user group as required by the institution.
 5. Enter Google client ID and secret in Supabase's Google provider settings. Do not put them in this repository.
-6. Apply migrations in filename order using the Supabase CLI (`supabase link --project-ref YOUR_PROJECT_REF`, then `supabase db push`) or the SQL editor. Do not manually recreate the tables. The schema includes RLS policies and workflow RPC functions.
+6. Apply migrations in filename order using the Supabase CLI (`supabase link --project-ref YOUR_PROJECT_REF`, then `supabase db push`) or the SQL editor. In particular, `202609270001_multi_student_od.sql` adds parent/child requests, scoped RLS, RPC workflow, notifications, attendance, and student profile provisioning. Do not manually recreate tables.
 7. For development only, run `supabase/seed/seed.sql` after migrations. Review the seed before running it; never seed production.
-8. Create/link authorized Auth users and profiles using the trusted provisioning workflow above. Create the ECE department, active academic year, category limits, and workflow settings.
-9. Confirm RLS is enabled on every application table and test with separate student, faculty, HOD, and admin accounts. Verify cross-student reads, unassigned faculty decisions, cross-department access, special permission decisions, and withdrawal.
+8. Existing ECE department is upserted by the migration. Provision and role-assign faculty/HOD profiles through the trusted workflow above. Existing academic-year/limit settings are legacy features; they are not enforced by the new parent request RPC.
+9. Confirm RLS is enabled and test with separate student, assigned/unassigned faculty, and HOD accounts. Verify requester-versus-recipient visibility, cross-student reads, invalid transitions, attendance authorization, and direct API attempts.
 10. Configure email only after selecting a provider. In-app notifications are written by database workflow functions; production email sending is not yet wired into those functions/actions.
 
 The migrations do not provision the first admin, create identity profiles from OAuth, or automatically create the ECE department/academic-year configuration. These require an institution-approved bootstrap procedure before login and submissions can work.
@@ -76,11 +76,20 @@ Copy `.env.example` to `.env.local` and fill deployment-specific values:
 
 The `.env`, `.env.*`, and `.env*.local` patterns are ignored, with `.env.example` explicitly retained. Do not commit secrets.
 
+## Google OAuth and Supabase configuration
+
+- Configure Google as an OAuth provider in Supabase Authentication and add the Supabase callback URL to the Google OAuth client.
+- Set the Supabase Site URL and redirect allow-list to include `/auth/callback`; use the deployed app origin in production.
+- Set `ALLOWED_EMAIL_DOMAIN=srmist.edu.in`. The app and database both enforce the exact suffix; changing this value does not widen the database trigger's SRMIST restriction.
+- Enable email confirmation and configure Supabase SMTP for production signup/reset-password messages. Google OAuth must return a verified email. The callback rejects unconfirmed identities.
+- Use `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_APP_URL`, `ALLOWED_EMAIL_DOMAIN`, and `ENABLE_DEMO_AUTH=false`. No service-role key is needed by the web app.
+- This migration adds no Storage bucket because the current request form has no document-upload control. If upload support is added, use a private bucket and request-authorized Storage policies before enabling it.
+
 ## Notifications, email, and PDF
 
-Database workflow functions persist in-app notifications for submitted ODs, faculty assignment/decision, special permission decisions, and HOD decisions. The portal can read a user's notifications. Unread counts and mark-read actions are not complete. Email is an abstraction only and is not called by workflow actions; setting email variables alone does not enable delivery.
+Database workflow functions persist in-app notifications for submitted ODs and faculty/HOD decisions; existing notification read actions remain available. Email delivery is not wired. Realtime subscriptions are not enabled; the UI refreshes from the server-backed portal API.
 
-Consolidation currently filters the portal's loaded (up to 100) RLS-visible applications in the browser. It is not paginated or a server-side filtered query and does not yet expose all requested filters. The PDF uses those real loaded records and configured college/department names, but the logo remains a placeholder and PDF filtering inherits the current page filters. Do not treat this consolidation as a complete official register until server-side pagination/filtering and department/year scoping are implemented and verified.
+Consolidation currently filters the portal's loaded (up to 200) RLS-visible applications in the browser. It is not paginated or a server-side filtered query and does not yet expose all requested filters. The PDF uses those real loaded records and configured college/department names, but the logo remains a placeholder and PDF filtering inherits the current page filters. Do not treat this consolidation as a complete official register until server-side pagination/filtering and department/year scoping are implemented and verified.
 
 ## Commands and verification
 
@@ -92,7 +101,21 @@ npm run build
 npm audit --omit=dev
 ```
 
-Unit tests cover period validation, overlap behavior, approved-only limit counts, and pending-only faculty replacement. Integration/security tests against a real Supabase instance and full end-to-end workflow tests are not included. A passing local build does not verify project credentials, OAuth, deployed RLS, database migrations, or email delivery.
+Unit tests currently cover legacy period validation, overlap behavior, approved-only limit counts, and pending-only faculty replacement. A real Supabase integration project is required to exercise RLS, trigger behavior, RPC transitions, OAuth, and the scenarios below; no project credentials are present in this workspace, so those remote checks have not been run.
+
+### Required manual acceptance scenarios
+
+Create at least two verified student Auth accounts, one authorized ECE faculty account, and one authorized ECE HOD account in a non-production Supabase project. Use distinct Auth UUIDs and student register numbers. Then verify:
+
+1. Student A submits for A alone; A sees the request in My ODs.
+2. A submits for B and C; A sees it under Requests Submitted By Me, B/C see it under My ODs, and unrelated D cannot query it.
+3. Assigned faculty approval moves the whole request to `PENDING_HOD`; faculty rejection requires a reason and retains the request.
+4. HOD approval sets `APPROVED`, visible in authorized approved lists; HOD rejection requires a reason and retains the request.
+5. Manipulated student status writes fail; an unassigned faculty action and faculty HOD decision fail; a student cannot read unrelated OD/attendance records.
+6. A non-SRMIST Google account and an unconfirmed college email cannot enter the protected portal.
+7. Authorized faculty records Present/Absent once per request/student; the student sees only their own attendance.
+
+There are no production test credentials in the repository. Do not share or commit test passwords; create disposable Auth users in a staging project and assign staff roles only through the trusted admin process.
 
 ## Vercel deployment
 
@@ -121,4 +144,4 @@ Unit tests cover period validation, overlap behavior, approved-only limit counts
 
 ## Known limitations
 
-This repository is not yet production-ready. Admin management is a dashboard summary only; profile provisioning, department/academic-year/limit settings, and special-approver configuration have no complete admin UI. Email delivery is not wired. Notification read state is not manageable in the UI. Consolidation is client-filtered, limited to 100 loaded rows, and lacks server pagination/full filters. Correction editing/resubmission and special-approver governance need a complete end-to-end audit. No live Supabase credentials were available, so migrations, RLS, OAuth, and database workflow functions were not executed against PostgreSQL. Full security and E2E test suites are still required.
+This implementation still needs a staged Supabase deployment and security acceptance before production. Admin management is a dashboard summary only; staff profile provisioning, department/academic-year/limit settings, and admin UI have not been built. Email delivery is not wired. Realtime updates are not enabled. Consolidation is client-filtered, limited to 200 loaded rows, and lacks server pagination/full filters. Legacy special permission/period flows are not integrated with parent requests. No live Supabase credentials or local PostgreSQL/Supabase CLI were available, so migrations, RLS, OAuth, and database workflow functions were not executed against PostgreSQL. Full security and E2E test suites remain required.
