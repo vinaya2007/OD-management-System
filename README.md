@@ -20,9 +20,9 @@ The former period-based special-permission flow belongs to the legacy OD schema;
 
 ## Authentication and profile provisioning
 
-Email/password signup and Google OAuth use Supabase Auth. The auth trigger rejects non-`@srmist.edu.in` identities and creates only a student profile; frontend role metadata is ignored. Google users without a complete student profile are directed to profile completion. The callback requires a confirmed email and the exact college domain. The `complete_student_profile` RPC validates register number/section and fixes the department to ECE.
+Email/password student signup uses Supabase Auth and a database trigger to create the complete `profiles` row at account creation; the trigger verifies the college domain, department, register number, year, and section, and assigns only the `student` role. Login and OAuth callbacks look up the linked profile by `profiles.auth_user_id = auth.users.id` and route by its database role. Profile completion is not part of the authentication flow. The callback requires a confirmed email and the exact college domain.
 
-Faculty/HOD roles must be granted through a trusted Supabase admin/database operation after verifying the person's institutional authorization. For example, a privileged operator may change `profiles.role` for the exact Auth-linked profile in the Supabase SQL editor; never expose this operation through student UI or client code. Confirm `department_id`, `is_active`, email, and `auth_user_id` at the same time. Student accounts self-provision only through the signup/Google flow.
+Faculty/HOD roles must be granted through a trusted Supabase admin/database operation after verifying the person's institutional authorization. For example, a privileged operator may change `profiles.role` for the exact Auth-linked profile in the Supabase SQL editor; never expose this operation through student UI or client code. Confirm `department_id`, `is_active`, email, and `auth_user_id` at the same time. New students register through the student form; existing staff accounts are provisioned through the trusted admin process.
 
 1. Create/verify the account using the student signup flow for students, or provision/invite through the approved identity process for staff.
 2. For staff only, link the Auth UUID to the existing profile and grant the authorized role through the privileged admin channel.
@@ -145,3 +145,5 @@ There are no production test credentials in the repository. Do not share or comm
 ## Known limitations
 
 This implementation still needs a staged Supabase deployment and security acceptance before production. Admin management is a dashboard summary only; staff profile provisioning, department/academic-year/limit settings, and admin UI have not been built. Email delivery is not wired. Realtime updates are not enabled. Consolidation is client-filtered, limited to 200 loaded rows, and lacks server pagination/full filters. Legacy special permission/period flows are not integrated with parent requests. No live Supabase credentials or local PostgreSQL/Supabase CLI were available, so migrations, RLS, OAuth, and database workflow functions were not executed against PostgreSQL. Full security and E2E test suites remain required.
+
+
