@@ -2,16 +2,17 @@ import { z } from "zod";
 
 export const OD_CATEGORIES = ["Technical Event", "Non-Technical Event", "Hackathon", "Sports", "College Event", "Internship", "Club Organizer / Coordinator", "Other"] as const;
 const isoDate = z.string().date();
-const periodSchema = z.object({ date: isoDate, fromPeriod: z.number().int().min(1).max(7), toPeriod: z.number().int().min(1).max(7) }).refine((period) => period.fromPeriod <= period.toPeriod, { message: "From period must not be later than To period.", path: ["toPeriod"] });
+const periodSchema = z.object({ date: isoDate, fromPeriod: z.number().int().min(1).max(9), toPeriod: z.number().int().min(1).max(9) }).refine((period) => period.fromPeriod <= period.toPeriod, { message: "From period must not be later than To period.", path: ["toPeriod"] });
 
 export const submitODRequestSchema = z.object({
-  id: z.string().uuid(), idempotencyKey: z.string().uuid(), eventName: z.string().trim().min(2).max(250),
+  category: z.enum(OD_CATEGORIES), eventName: z.string().trim().min(2).max(250),
   eventType: z.string().trim().min(2).max(100), organization: z.string().trim().max(250).optional(), eventDate: isoDate,
   startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
-  venue: z.string().trim().min(2).max(300), purpose: z.string().trim().max(2000).optional(), requesterRemarks: z.string().trim().max(5000).optional(),
-  studentIds: z.array(z.string().uuid()).min(1).max(50), facultyIds: z.array(z.string().uuid()).min(1).max(3)
+  venue: z.string().trim().min(2).max(300), purpose: z.string().trim().min(5).max(2000), requesterRemarks: z.string().trim().max(5000).optional(),
+  studentIds: z.array(z.string().uuid()).min(1), startPeriod: z.number().int().min(1).max(9), endPeriod: z.number().int().min(1).max(9), facultyIds: z.array(z.string().uuid()).min(1).max(3)
 }).superRefine((value, context) => {
   if (value.endTime <= value.startTime) context.addIssue({ code: "custom", path: ["endTime"], message: "End time must be after start time." });
+  if (value.startPeriod > value.endPeriod) context.addIssue({ code: "custom", path: ["endPeriod"], message: "To period must not be before From period." });
   if (new Set(value.studentIds).size !== value.studentIds.length) context.addIssue({ code: "custom", path: ["studentIds"], message: "OD students must be unique." });
   if (new Set(value.facultyIds).size !== value.facultyIds.length) context.addIssue({ code: "custom", path: ["facultyIds"], message: "Faculty reviewers must be unique." });
 });

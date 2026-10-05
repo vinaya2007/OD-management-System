@@ -21,8 +21,8 @@ export function formatDate(value: string) {
 }
 
 export function assertValidPeriod(period: Pick<ODPeriod, "fromPeriod" | "toPeriod">) {
-  if (!Number.isInteger(period.fromPeriod) || !Number.isInteger(period.toPeriod) || period.fromPeriod < 1 || period.fromPeriod > 7 || period.toPeriod < 1 || period.toPeriod > 7 || period.fromPeriod > period.toPeriod) {
-    throw new Error("Select a valid period range between 1 and 7.");
+  if (!Number.isInteger(period.fromPeriod) || !Number.isInteger(period.toPeriod) || period.fromPeriod < 1 || period.fromPeriod > 9 || period.toPeriod < 1 || period.toPeriod > 9 || period.fromPeriod > period.toPeriod) {
+    throw new Error("Select a valid period range between 1 and 9.");
   }
 }
 
@@ -43,8 +43,11 @@ export function approvedUsage(records: ODRecord[], studentId: string, category: 
 }
 
 export function getLimitState(records: ODRecord[], limits: ODLimit[], studentId: string, category: ODApplication["category"]) {
-  const limit = limits.find((item) => item.category === category && item.isActive);
-  const used = approvedUsage(records, studentId, category);
+  const categoryLimit = limits.find((item) => item.category === category && item.isActive);
+  const limit = categoryLimit ?? limits.find((item) => item.category === undefined && item.isActive);
+  const used = categoryLimit
+    ? approvedUsage(records, studentId, category)
+    : records.filter((record) => (record.odStudentIds ?? [record.studentId]).includes(studentId) && record.status === "APPROVED").length;
   return {
     used,
     allowed: limit?.limitCount ?? 0,

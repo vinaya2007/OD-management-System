@@ -11,8 +11,9 @@ export const registerNumberSchema = z.string().trim().toUpperCase().regex(/^RA[A
 export const registerStudentSchema = z.object({
   fullName: z.string().trim().min(2).max(120),
   registerNumber: registerNumberSchema,
-  department: z.literal("ECE"),
+  departmentId: z.union([z.string().uuid(), z.literal("ECE")]),
   section: z.enum(["A", "B"]),
+  year: z.enum(["I", "II", "III", "IV"]),
   email: srmistEmailSchema,
   password: z.string().min(10).max(128),
   confirmPassword: z.string().min(10).max(128)
@@ -20,8 +21,3 @@ export const registerStudentSchema = z.object({
   message: "Passwords do not match.", path: ["confirmPassword"]
 });
 
-export const completeStudentProfileSchema = z.object({
-  fullName: z.string().trim().min(2).max(120),
-  registerNumber: registerNumberSchema,
-  section: z.enum(["A", "B"])
-});

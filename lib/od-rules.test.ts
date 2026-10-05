@@ -12,9 +12,9 @@ const record = (status: ODRecord["status"], periods: ODRecord["periods"]): ODRec
 });
 
 describe("OD business rules", () => {
-  it("accepts only integer period ranges from 1 through 7", () => {
-    expect(() => assertValidPeriod({ fromPeriod: 1, toPeriod: 7 })).not.toThrow();
-    for (const invalid of [{ fromPeriod: 0, toPeriod: 2 }, { fromPeriod: 2, toPeriod: 8 }, { fromPeriod: 4, toPeriod: 3 }, { fromPeriod: 1.5, toPeriod: 2 }]) {
+  it("accepts only integer period ranges from 1 through 9", () => {
+    expect(() => assertValidPeriod({ fromPeriod: 1, toPeriod: 9 })).not.toThrow();
+    for (const invalid of [{ fromPeriod: 0, toPeriod: 2 }, { fromPeriod: 2, toPeriod: 10 }, { fromPeriod: 4, toPeriod: 3 }, { fromPeriod: 1.5, toPeriod: 2 }]) {
       expect(() => assertValidPeriod(invalid)).toThrow();
     }
   });

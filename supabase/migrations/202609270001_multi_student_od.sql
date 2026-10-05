@@ -1,367 +1,1889 @@
--- Multi-recipient OD requests, registration/profile provisioning, and attendance.
--- Additive migration: legacy od_applications remain intact and are copied below.
+-- ============================================================
+-- SRMIST ECE OD MANAGEMENT SYSTEM
+-- FINAL WORKFLOW / SECURITY MIGRATION
+-- Compatible with the FINAL schema
+-- ============================================================
 
-do $$ begin
-  create type od_request_status as enum ('PENDING_FACULTY','REJECTED_BY_FACULTY','PENDING_HOD','REJECTED_BY_HOD','APPROVED','WITHDRAWN');
-exception when duplicate_object then null; end $$;
-do $$ begin
-  create type od_attendance_status as enum ('PRESENT','ABSENT');
-exception when duplicate_object then null; end $$;
+-- ============================================================
+-- 1. ADDITIONAL OD STATUS
+-- ============================================================
+--
+-- The main schema intentionally did not include WITHDRAWN.
+-- Add it safely.
+-- ============================================================
 
-insert into departments (name, code, is_active)
-values ('Electronics and Communication Engineering', 'ECE', true)
-on conflict (code) do update set name = excluded.name;
+ALTER TYPE public.od_status
+ADD VALUE IF NOT EXISTS 'WITHDRAWN';
 
-create table if not exists od_requests (
-  id uuid primary key default uuid_generate_v4(),
-  requester_id uuid not null references profiles(id),
-  department_id uuid not null references departments(id),
-  event_name text not null check (char_length(trim(event_name)) between 2 and 250),
-  event_type text not null,
-  organization text,
-  event_date date not null,
-  event_end_date date,
-  start_time time,
-  end_time time,
-  venue text not null,
-  purpose text,
-  supporting_document_url text,
-  requester_remarks text,
-  status od_request_status not null default 'PENDING_FACULTY',
-  faculty_id uuid references profiles(id),
-  faculty_action_at timestamptz,
-  faculty_remarks text,
-  hod_id uuid references profiles(id),
-  hod_action_at timestamptz,
-  hod_remarks text,
-  is_potential_duplicate boolean not null default false,
-  idempotency_key uuid,
-  legacy_od_id uuid unique references od_applications(id) on delete set null,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  check (event_end_date is null or event_end_date >= event_date),
-  check (start_time is null or end_time is null or end_time > start_time),
-  unique (requester_id, idempotency_key)
+
+-- ============================================================
+-- 2. AUDIT LOGS
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS public.audit_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+
+    actor_id UUID
+        REFERENCES public.profiles(id)
+        ON DELETE SET NULL,
+
+    request_id UUID
+        REFERENCES public.od_requests(id)
+        ON DELETE SET NULL,
+
+    action TEXT NOT NULL,
+
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-create index if not exists od_requests_status_department_date_idx on od_requests (department_id, status, event_date desc);
-create index if not exists od_requests_requester_created_idx on od_requests (requester_id, created_at desc);
-create index if not exists od_requests_event_date_idx on od_requests (event_date, status);
 
-create table if not exists od_request_students (
-  id uuid primary key default uuid_generate_v4(),
-  od_request_id uuid not null references od_requests(id) on delete cascade,
-  student_id uuid not null references profiles(id),
-  created_at timestamptz not null default now(),
-  unique (od_request_id, student_id)
-);
-create index if not exists od_request_students_student_idx on od_request_students (student_id, od_request_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor
+ON public.audit_logs(actor_id);
 
-create table if not exists od_request_faculty (
-  id uuid primary key default uuid_generate_v4(),
-  od_request_id uuid not null references od_requests(id) on delete cascade,
-  faculty_id uuid not null references profiles(id),
-  status faculty_approval_status not null default 'PENDING',
-  comment text,
-  action_at timestamptz,
-  created_at timestamptz not null default now(),
-  unique (od_request_id, faculty_id)
-);
-create index if not exists od_request_faculty_assignment_idx on od_request_faculty (faculty_id, status, od_request_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_request
+ON public.audit_logs(request_id);
 
-create table if not exists od_attendance (
-  id uuid primary key default uuid_generate_v4(),
-  od_request_id uuid not null references od_requests(id) on delete cascade,
-  student_id uuid not null references profiles(id),
-  attendance_status od_attendance_status not null,
-  marked_by uuid not null references profiles(id),
-  marked_at timestamptz not null default now(),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (od_request_id, student_id)
-);
-create index if not exists od_attendance_student_idx on od_attendance (student_id, marked_at desc);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action
+ON public.audit_logs(action);
 
-create table if not exists od_approval_history (
-  id uuid primary key default uuid_generate_v4(),
-  od_request_id uuid not null references od_requests(id) on delete cascade,
-  actor_id uuid references profiles(id) on delete set null,
-  actor_role user_role not null,
-  action text not null,
-  from_status od_request_status,
-  to_status od_request_status,
-  remarks text,
-  created_at timestamptz not null default now()
-);
-create index if not exists od_approval_history_request_idx on od_approval_history (od_request_id, created_at);
+ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
 
-alter table notifications add column if not exists od_request_id uuid references od_requests(id) on delete cascade;
-create index if not exists notifications_od_request_idx on notifications (od_request_id, created_at desc);
 
-alter table od_requests enable row level security;
-alter table od_request_students enable row level security;
-alter table od_request_faculty enable row level security;
-alter table od_attendance enable row level security;
-alter table od_approval_history enable row level security;
+-- ============================================================
+-- 3. CURRENT PROFILE
+-- ============================================================
 
--- Backfill old single-student records as requests submitted for that same student.
-insert into od_requests (
-  id, requester_id, department_id, event_name, event_type, organization, event_date, event_end_date,
-  venue, purpose, requester_remarks, status, is_potential_duplicate, legacy_od_id, created_at, updated_at
+CREATE OR REPLACE FUNCTION public.current_profile()
+RETURNS public.profiles
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+    SELECT p
+    FROM public.profiles p
+    WHERE p.auth_user_id = auth.uid()
+      AND p.is_active = TRUE
+    LIMIT 1;
+$$;
+
+
+-- ============================================================
+-- 4. CURRENT ROLE
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.current_role()
+RETURNS public.user_role
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+    SELECT p.role
+    FROM public.profiles p
+    WHERE p.auth_user_id = auth.uid()
+      AND p.is_active = TRUE
+    LIMIT 1;
+$$;
+
+
+-- ============================================================
+-- 5. ACTIVE PROFILE VALIDATION
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.active_profile_or_error()
+RETURNS public.profiles
+LANGUAGE PLPGSQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    profile_row public.profiles;
+    auth_email TEXT;
+BEGIN
+
+    SELECT LOWER(email)
+    INTO auth_email
+    FROM auth.users
+    WHERE id = auth.uid()
+      AND email_confirmed_at IS NOT NULL;
+
+    IF auth_email IS NULL THEN
+        RAISE EXCEPTION 'UNAUTHORIZED'
+            USING ERRCODE = 'P0001';
+    END IF;
+
+    IF split_part(auth_email, '@', 2) <> 'srmist.edu.in' THEN
+        RAISE EXCEPTION 'UNAUTHORIZED'
+            USING ERRCODE = 'P0001';
+    END IF;
+
+    SELECT *
+    INTO profile_row
+    FROM public.profiles
+    WHERE auth_user_id = auth.uid()
+      AND is_active = TRUE
+      AND LOWER(email) = auth_email
+    LIMIT 1;
+
+    IF profile_row.id IS NULL THEN
+        RAISE EXCEPTION 'PROFILE_NOT_FOUND'
+            USING ERRCODE = 'P0001';
+    END IF;
+
+    RETURN profile_row;
+
+END;
+$$;
+
+
+-- ============================================================
+-- 6. FUNCTION PERMISSIONS
+-- ============================================================
+
+REVOKE ALL
+ON FUNCTION public.current_profile()
+FROM PUBLIC, anon;
+
+REVOKE ALL
+ON FUNCTION public.current_role()
+FROM PUBLIC, anon;
+
+REVOKE ALL
+ON FUNCTION public.active_profile_or_error()
+FROM PUBLIC, anon;
+
+GRANT EXECUTE
+ON FUNCTION public.current_profile()
+TO authenticated;
+
+GRANT EXECUTE
+ON FUNCTION public.current_role()
+TO authenticated;
+
+GRANT EXECUTE
+ON FUNCTION public.active_profile_or_error()
+TO authenticated;
+
+
+-- ============================================================
+-- 7. PROFILE SEARCH
+-- ============================================================
+--
+-- Used by the student OD form to search other students.
+--
+-- Search by:
+--     Name
+--     Register Number
+--
+-- Only students from the same department are returned.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.search_ece_students(
+    p_query TEXT
 )
-select old.id, old.student_id, old.department_id, old.event_name, old.category, old.college_name, old.start_date, old.end_date,
-  old.venue_type, old.purpose, old.additional_notes,
-  case old.status
-    when 'APPROVED' then 'APPROVED'::od_request_status
-    when 'WITHDRAWN' then 'WITHDRAWN'::od_request_status
-    when 'HOD_REVIEW' then 'PENDING_HOD'::od_request_status
-    when 'FACULTY_APPROVED' then 'PENDING_HOD'::od_request_status
-    when 'REJECTED' then case when exists(select 1 from od_faculty_approvals a where a.od_id=old.id and a.status='REJECTED') then 'REJECTED_BY_FACULTY'::od_request_status else 'REJECTED_BY_HOD'::od_request_status end
-    else 'PENDING_FACULTY'::od_request_status
-  end,
-  old.is_special, old.id, old.created_at, old.updated_at
-from od_applications old
-on conflict (id) do nothing;
-insert into od_request_students (od_request_id, student_id)
-select request.id, request.requester_id from od_requests request where request.legacy_od_id is not null
-on conflict (od_request_id, student_id) do nothing;
-insert into od_request_faculty (od_request_id, faculty_id, status, comment, action_at, created_at)
-select request.id, approval.faculty_id, approval.status, approval.comment, approval.approved_at, approval.created_at
-from od_faculty_approvals approval join od_requests request on request.legacy_od_id=approval.od_id
-on conflict (od_request_id, faculty_id) do nothing;
-insert into od_approval_history (od_request_id, actor_id, actor_role, action, from_status, to_status, remarks, created_at)
-select request.id, request.requester_id, 'student', 'LEGACY_IMPORTED', null, request.status, 'Imported from the previous OD application workflow.', request.created_at
-from od_requests request where request.legacy_od_id is not null
-  and not exists(select 1 from od_approval_history history where history.od_request_id=request.id);
+RETURNS TABLE (
+    id UUID,
+    full_name TEXT,
+    register_number TEXT,
+    section TEXT,
+    year TEXT,
+    department TEXT
+)
+LANGUAGE PLPGSQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    actor public.profiles;
+    search_term TEXT;
+BEGIN
 
--- New Auth identities can only self-provision as students. Privileged roles are never read from metadata.
-create or replace function provision_student_profile_for_auth_user()
-returns trigger language plpgsql security definer set search_path = public as $$
-declare dept_id uuid; profile_name text; register_no text; section_value text;
-begin
-  if new.email is null or lower(split_part(new.email, '@', 2)) <> 'srmist.edu.in' then
-    raise exception 'Only verified @srmist.edu.in accounts are allowed.' using errcode = '23514';
-  end if;
-  select id into dept_id from departments where code='ECE' and is_active limit 1;
-  if dept_id is null then raise exception 'ECE department is not configured.' using errcode = '23514'; end if;
-  profile_name := coalesce(nullif(trim(new.raw_user_meta_data->>'full_name'), ''), nullif(trim(new.raw_user_meta_data->>'name'), ''), split_part(new.email, '@', 1));
-  register_no := nullif(upper(trim(new.raw_user_meta_data->>'register_number')), '');
-  section_value := nullif(upper(trim(new.raw_user_meta_data->>'section')), '');
-  if register_no is not null and register_no !~ '^RA[A-Z0-9]{6,18}$' then raise exception 'Invalid SRMIST register number.' using errcode = '23514'; end if;
-  if section_value is not null and section_value not in ('A','B') then raise exception 'Section must be A or B.' using errcode = '23514'; end if;
-  insert into profiles (auth_user_id, name, email, role, department_id, register_number, section, is_active)
-  values (new.id, profile_name, lower(new.email), 'student', dept_id, register_no, section_value, true)
-  on conflict (auth_user_id) do nothing;
-  return new;
-end $$;
-drop trigger if exists auth_user_provision_student_profile on auth.users;
-create trigger auth_user_provision_student_profile after insert on auth.users
-for each row execute function provision_student_profile_for_auth_user();
-revoke all on function provision_student_profile_for_auth_user() from public, anon, authenticated;
+    actor := public.active_profile_or_error();
 
--- Bind every authenticated workflow RPC to a confirmed SRMIST Auth identity.
-create or replace function active_profile_or_error()
-returns profiles language plpgsql stable security definer set search_path = public as $$
-declare profile_row profiles; verified_email text;
-begin
-  select email into verified_email from auth.users
-  where id=auth.uid() and email_confirmed_at is not null and lower(split_part(email,'@',2))='srmist.edu.in';
-  if verified_email is null then raise exception 'UNAUTHORIZED' using errcode='P0001'; end if;
-  select * into profile_row from profiles where auth_user_id=auth.uid() and is_active and lower(email)=lower(verified_email) limit 1;
-  if profile_row.id is null then raise exception 'UNAUTHORIZED' using errcode='P0001'; end if;
-  return profile_row;
-end $$;
-revoke all on function active_profile_or_error() from public, anon;
-grant execute on function active_profile_or_error() to authenticated;
+    IF actor.role <> 'student' THEN
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+    END IF;
 
-create unique index if not exists profiles_register_number_ci_unique on profiles (lower(register_number)) where register_number is not null;
-alter table profiles drop constraint if exists profiles_section_check;
-alter table profiles add constraint profiles_section_check check (section is null or section in ('A','B'));
+    IF LENGTH(TRIM(COALESCE(p_query, ''))) < 2 THEN
+        RAISE EXCEPTION 'Enter at least two characters to search.'
+            USING ERRCODE = 'P0001';
+    END IF;
 
-create or replace function complete_student_profile(p_full_name text, p_register_number text, p_section text)
-returns void language plpgsql security definer set search_path = public as $$
-declare actor profiles := active_profile_or_error(); register_no text := upper(trim(p_register_number)); section_value text := upper(trim(p_section));
-begin
-  if actor.role <> 'student' or actor.auth_user_id <> auth.uid() or lower(split_part(actor.email,'@',2)) <> 'srmist.edu.in'
-    or length(trim(p_full_name)) not between 2 and 120 or register_no !~ '^RA[A-Z0-9]{6,18}$' or section_value not in ('A','B') then
-    raise exception 'Invalid profile details.' using errcode = 'P0001';
-  end if;
-  update profiles set name=trim(p_full_name), register_number=register_no, section=section_value,
-    department_id=(select id from departments where code='ECE' and is_active limit 1)
-  where id=actor.id;
-end $$;
+    IF LENGTH(p_query) > 80 THEN
+        RAISE EXCEPTION 'Search query is too long.'
+            USING ERRCODE = 'P0001';
+    END IF;
 
-create or replace function search_ece_students(p_query text)
-returns table(id uuid, name text, register_number text, section text, department text)
-language plpgsql stable security definer set search_path = public as $$
-declare actor profiles := active_profile_or_error(); term text;
-begin
-  if actor.role <> 'student' or length(trim(coalesce(p_query,''))) < 2 or length(p_query) > 80 then
-    raise exception 'Enter at least two characters to search.' using errcode = 'P0001';
-  end if;
-  term := replace(replace(replace(trim(p_query), '\', '\\'), '%', '\%'), '_', '\_');
-  return query select p.id, p.name, p.register_number, p.section, d.name
-  from profiles p join departments d on d.id=p.department_id
-  where p.role='student' and p.is_active and p.department_id=actor.department_id
-    and p.id <> actor.id
-    and (p.register_number ilike '%'||term||'%' escape '\' or p.name ilike '%'||term||'%' escape '\')
-  order by p.name limit 20;
-end $$;
+    search_term :=
+        REPLACE(
+            REPLACE(
+                REPLACE(
+                    TRIM(p_query),
+                    '\',
+                    '\\'
+                ),
+                '%',
+                '\%'
+            ),
+            '_',
+            '\_'
+        );
 
--- Restrict recipient profile visibility to participants, requesters, or department staff.
-drop policy if exists "scoped profile visibility" on profiles;
-drop policy if exists "active users can read active profiles in department" on profiles;
-create policy "multi od scoped profile visibility" on profiles for select using (
-  auth.uid() = auth_user_id
-  or current_role() = 'admin'
-  or (current_role() in ('faculty','hod') and department_id=(current_profile()).department_id)
-  or (current_role()='student' and role='faculty' and is_active and department_id=(current_profile()).department_id)
-  or (current_role()='student' and role='student' and exists (
-    select 1 from od_request_students recipient join od_requests request on request.id=recipient.od_request_id
-    where recipient.student_id=profiles.id and (
-      request.requester_id=(current_profile()).id
-      or exists(select 1 from od_request_students mine where mine.od_request_id=request.id and mine.student_id=(current_profile()).id)
+    RETURN QUERY
+
+    SELECT
+        p.id,
+        p.full_name,
+        p.register_number,
+        p.section,
+        p.year,
+        d.name
+
+    FROM public.profiles p
+
+    JOIN public.departments d
+        ON d.id = p.department_id
+
+    WHERE p.role = 'student'
+      AND p.is_active = TRUE
+      AND p.department_id = actor.department_id
+      AND p.id <> actor.id
+
+      AND (
+            p.full_name ILIKE '%' || search_term || '%' ESCAPE '\'
+            OR
+            p.register_number ILIKE '%' || search_term || '%' ESCAPE '\'
+      )
+
+    ORDER BY p.full_name
+
+    LIMIT 30;
+
+END;
+$$;
+
+
+REVOKE ALL
+ON FUNCTION public.search_ece_students(TEXT)
+FROM PUBLIC, anon;
+
+GRANT EXECUTE
+ON FUNCTION public.search_ece_students(TEXT)
+TO authenticated;
+
+
+-- ============================================================
+-- 8. PROFILE VISIBILITY
+-- ============================================================
+
+DROP POLICY IF EXISTS "profiles_read_own"
+ON public.profiles;
+
+DROP POLICY IF EXISTS "profiles_staff_read_department"
+ON public.profiles;
+
+DROP POLICY IF EXISTS "profiles_admin_read"
+ON public.profiles;
+
+DROP POLICY IF EXISTS "students_read_department_students"
+ON public.profiles;
+
+DROP POLICY IF EXISTS "scoped_profile_visibility"
+ON public.profiles;
+
+
+CREATE POLICY "scoped_profile_visibility"
+ON public.profiles
+FOR SELECT
+TO authenticated
+USING (
+
+    -- Own profile
+    auth.uid() = auth_user_id
+
+    -- Admin
+    OR public.has_admin_access()
+
+    -- Faculty / HOD can see department profiles
+    OR (
+        public.current_role() IN ('faculty', 'hod')
+        AND department_id = public.current_user_department()
     )
-  ))
+
+    -- Students can see active faculty
+    OR (
+        public.current_role() = 'student'
+        AND role = 'faculty'
+        AND is_active = TRUE
+        AND department_id = public.current_user_department()
+    )
+
+    -- Students can see other students in same department
+    OR (
+        public.current_role() = 'student'
+        AND role = 'student'
+        AND is_active = TRUE
+        AND department_id = public.current_user_department()
+    )
 );
 
-create policy "od requests scoped read" on od_requests for select using (
-  requester_id=(current_profile()).id
-  or exists(select 1 from od_request_students recipient where recipient.od_request_id=od_requests.id and recipient.student_id=(current_profile()).id)
-  or exists(select 1 from od_request_faculty assigned where assigned.od_request_id=od_requests.id and assigned.faculty_id=(current_profile()).id)
-  or (current_role()='hod' and department_id=(current_profile()).department_id)
-  or current_role()='admin'
+
+-- ============================================================
+-- 9. OD REQUEST READ POLICY
+-- ============================================================
+
+DROP POLICY IF EXISTS "od_requests_student_read"
+ON public.od_requests;
+
+DROP POLICY IF EXISTS "od_requests_faculty_read"
+ON public.od_requests;
+
+DROP POLICY IF EXISTS "od_requests_hod_read"
+ON public.od_requests;
+
+DROP POLICY IF EXISTS "od_requests_admin_read"
+ON public.od_requests;
+
+DROP POLICY IF EXISTS "od_requests_scoped_read"
+ON public.od_requests;
+
+
+CREATE POLICY "od_requests_scoped_read"
+ON public.od_requests
+FOR SELECT
+TO authenticated
+USING (
+
+    -- Admin
+    public.has_admin_access()
+
+    -- Faculty
+    OR (
+        public.current_role() = 'faculty'
+        AND department_id = public.current_user_department()
+    )
+
+    -- HOD
+    OR (
+        public.current_role() = 'hod'
+        AND department_id = public.current_user_department()
+    )
+
+    -- Requester
+    OR requester_id = public.current_profile_id()
+
+    -- Student included in request
+    OR EXISTS (
+        SELECT 1
+        FROM public.od_request_students ors
+        WHERE ors.request_id = od_requests.id
+          AND ors.student_id = public.current_profile_id()
+    )
 );
-create policy "request students scoped read" on od_request_students for select using (
-  exists(select 1 from od_requests request where request.id=od_request_students.od_request_id)
+
+
+-- ============================================================
+-- 10. OD REQUEST INSERT
+-- ============================================================
+
+DROP POLICY IF EXISTS "od_requests_student_insert"
+ON public.od_requests;
+
+DROP POLICY IF EXISTS "od_requests_admin_insert"
+ON public.od_requests;
+
+
+CREATE POLICY "od_requests_student_insert"
+ON public.od_requests
+FOR INSERT
+TO authenticated
+WITH CHECK (
+
+    public.current_role() = 'student'
+
+    AND requester_id = public.current_profile_id()
+
+    AND department_id = public.current_user_department()
+
+    AND status = 'PENDING_FACULTY'
+
+    AND faculty_decision_by IS NULL
+
+    AND faculty_decision_at IS NULL
+
+    AND hod_decision_by IS NULL
+
+    AND hod_decision_at IS NULL
 );
-create policy "request faculty scoped read" on od_request_faculty for select using (
-  faculty_id=(current_profile()).id or current_role()='admin'
-  or (current_role()='hod' and exists(select 1 from od_requests request where request.id=od_request_faculty.od_request_id and request.department_id=(current_profile()).department_id))
-  or exists(select 1 from od_requests request join od_request_students student on student.od_request_id=request.id where request.id=od_request_faculty.od_request_id and (request.requester_id=(current_profile()).id or student.student_id=(current_profile()).id))
+
+
+CREATE POLICY "od_requests_admin_insert"
+ON public.od_requests
+FOR INSERT
+TO authenticated
+WITH CHECK (
+    public.has_admin_access()
 );
-create policy "attendance scoped read" on od_attendance for select using (
-  student_id=(current_profile()).id or current_role()='admin'
-  or (current_role() in ('faculty','hod') and exists(select 1 from od_requests request where request.id=od_attendance.od_request_id and request.department_id=(current_profile()).department_id))
+
+
+-- ============================================================
+-- 11. REMOVE DIRECT OD UPDATE
+-- ============================================================
+--
+-- Normal users cannot directly modify status.
+-- Workflow functions below handle approval/rejection.
+-- ============================================================
+
+DROP POLICY IF EXISTS "od_requests_admin_update"
+ON public.od_requests;
+
+CREATE POLICY "od_requests_admin_update"
+ON public.od_requests
+FOR UPDATE
+TO authenticated
+USING (
+    public.has_admin_access()
+)
+WITH CHECK (
+    public.has_admin_access()
 );
-create policy "approval history scoped read" on od_approval_history for select using (
-  current_role()='admin'
-  or exists(select 1 from od_requests request where request.id=od_approval_history.od_request_id and (
-    request.requester_id=(current_profile()).id
-    or exists(select 1 from od_request_students student where student.od_request_id=request.id and student.student_id=(current_profile()).id)
-    or (current_role() in ('faculty','hod') and request.department_id=(current_profile()).department_id)
-  ))
+
+
+-- ============================================================
+-- 12. OD STUDENT VISIBILITY
+-- ============================================================
+
+DROP POLICY IF EXISTS "od_request_students_read"
+ON public.od_request_students;
+
+
+CREATE POLICY "od_request_students_read"
+ON public.od_request_students
+FOR SELECT
+TO authenticated
+USING (
+
+    public.has_admin_access()
+
+    OR student_id = public.current_profile_id()
+
+    OR EXISTS (
+        SELECT 1
+        FROM public.od_requests r
+        WHERE r.id = od_request_students.request_id
+        AND (
+            r.requester_id = public.current_profile_id()
+
+            OR (
+                public.current_role() IN ('faculty', 'hod')
+                AND r.department_id = public.current_user_department()
+            )
+        )
+    )
 );
-grant select on od_requests, od_request_students, od_request_faculty, od_attendance, od_approval_history to authenticated;
-revoke insert, update, delete on od_requests, od_request_students, od_request_faculty, od_attendance, od_approval_history from anon, authenticated;
 
-create or replace function submit_od_request(p_payload jsonb)
-returns jsonb language plpgsql security definer set search_path = public as $$
-declare actor profiles := active_profile_or_error(); new_id uuid := coalesce(nullif(p_payload->>'id','')::uuid, uuid_generate_v4()); item_id uuid; faculty_count integer; student_count integer; duplicate_found boolean := false;
-begin
-  if actor.role <> 'student' or actor.department_id is null or actor.register_number is null or actor.section is null then raise exception 'Complete your student profile before submitting a request.' using errcode='P0001'; end if;
-  if nullif(p_payload->>'idempotency_key','') is null then raise exception 'Request token is required.' using errcode='P0001'; end if;
-  if nullif(trim(p_payload->>'event_name'),'') is null or (p_payload->>'event_date') is null
-    or nullif(trim(p_payload->>'start_time'),'') is null or nullif(trim(p_payload->>'end_time'),'') is null
-    or (p_payload->>'end_time')::time <= (p_payload->>'start_time')::time
-    or nullif(trim(p_payload->>'venue'),'') is null then raise exception 'Please complete the event details and time range.' using errcode='P0001'; end if;
-  if coalesce(jsonb_typeof(p_payload->'student_ids'),'') <> 'array' or coalesce(jsonb_typeof(p_payload->'faculty_ids'),'') <> 'array' then raise exception 'Select OD students and faculty reviewers.' using errcode='P0001'; end if;
-  if jsonb_array_length(p_payload->'student_ids') not between 1 and 50 or jsonb_array_length(p_payload->'faculty_ids') not between 1 and 3 then raise exception 'Select at least one OD student and one to three faculty reviewers.' using errcode='P0001'; end if;
-  select count(*), count(distinct item::uuid) into student_count, faculty_count from jsonb_array_elements_text(p_payload->'student_ids') as items(item);
-  if student_count <> faculty_count then raise exception 'An OD student cannot be selected more than once.' using errcode='P0001'; end if;
-  select count(*), count(distinct item::uuid) into student_count, faculty_count from jsonb_array_elements_text(p_payload->'faculty_ids') as items(item);
-  if student_count <> faculty_count then raise exception 'A faculty reviewer cannot be selected more than once.' using errcode='P0001'; end if;
-  if exists(select 1 from jsonb_array_elements_text(p_payload->'student_ids') x left join profiles p on p.id=x.value::uuid and p.role='student' and p.is_active and p.department_id=actor.department_id where p.id is null)
-    then raise exception 'One or more selected OD students are unavailable.' using errcode='P0001'; end if;
-  if exists(select 1 from jsonb_array_elements_text(p_payload->'faculty_ids') x left join profiles p on p.id=x.value::uuid and p.role='faculty' and p.is_active and p.department_id=actor.department_id where p.id is null)
-    then raise exception 'One or more faculty reviewers are unavailable.' using errcode='P0001'; end if;
-  select exists(select 1 from od_requests prior join od_request_students prior_student on prior_student.od_request_id=prior.id
-    where prior.department_id=actor.department_id and prior.event_date=(p_payload->>'event_date')::date
-      and lower(prior.event_name)=lower(trim(p_payload->>'event_name')) and prior.status not in ('REJECTED_BY_FACULTY','REJECTED_BY_HOD','WITHDRAWN')
-      and (p_payload->>'start_time')::time < coalesce(prior.end_time,'23:59:59'::time)
-      and prior.start_time < (p_payload->>'end_time')::time
-      and prior_student.student_id in (select item::uuid from jsonb_array_elements_text(p_payload->'student_ids') as items(item))
-  ) into duplicate_found;
-  insert into od_requests (id, requester_id, department_id, event_name, event_type, organization, event_date, start_time, end_time, venue, purpose, requester_remarks, status, is_potential_duplicate, idempotency_key)
-  values (new_id, actor.id, actor.department_id, trim(p_payload->>'event_name'), coalesce(nullif(trim(p_payload->>'event_type'),''),'Other'), nullif(trim(p_payload->>'organization'),''), (p_payload->>'event_date')::date, (p_payload->>'start_time')::time, (p_payload->>'end_time')::time, trim(p_payload->>'venue'), nullif(trim(p_payload->>'purpose'),''), nullif(trim(p_payload->>'requester_remarks'),''), 'PENDING_FACULTY', duplicate_found, (p_payload->>'idempotency_key')::uuid)
-  on conflict (requester_id,idempotency_key) do nothing;
-  if not found then select id into new_id from od_requests where requester_id=actor.id and idempotency_key=(p_payload->>'idempotency_key')::uuid; return jsonb_build_object('id',new_id,'potentialDuplicate',false); end if;
-  insert into od_request_students (od_request_id,student_id) select new_id,item::uuid from jsonb_array_elements_text(p_payload->'student_ids') as items(item);
-  insert into od_request_faculty (od_request_id,faculty_id) select new_id,item::uuid from jsonb_array_elements_text(p_payload->'faculty_ids') as items(item);
-  insert into od_approval_history (od_request_id,actor_id,actor_role,action,to_status) values (new_id,actor.id,'student','SUBMITTED','PENDING_FACULTY');
-  insert into notifications (user_id,od_request_id,type,title,message)
-    select distinct recipients.user_id,new_id,'OD_REQUEST_SUBMITTED','OD request submitted','A new OD request was submitted for your review.'
-    from (select actor.id user_id union select item::uuid from jsonb_array_elements_text(p_payload->'student_ids') as students(item) union select p.id from profiles p where p.id in (select item::uuid from jsonb_array_elements_text(p_payload->'faculty_ids') as faculty(item))) recipients;
-  return jsonb_build_object('id',new_id,'potentialDuplicate',duplicate_found);
-end $$;
 
-create or replace function decide_od_request_faculty(p_request_id uuid,p_approved boolean,p_remarks text default null)
-returns void language plpgsql security definer set search_path = public as $$
-declare actor profiles := active_profile_or_error(); request_row od_requests; next_status od_request_status;
-begin
-  if actor.role<>'faculty' or (not p_approved and nullif(trim(p_remarks),'') is null) then raise exception 'FORBIDDEN' using errcode='P0001'; end if;
-  select * into request_row from od_requests where id=p_request_id for update;
-  if request_row.id is null or request_row.department_id<>actor.department_id or request_row.status<>'PENDING_FACULTY'
-    or not exists(select 1 from od_request_faculty where od_request_id=p_request_id and faculty_id=actor.id and status='PENDING') then raise exception 'INVALID_STATUS_TRANSITION' using errcode='P0001'; end if;
-  next_status := case when p_approved then 'PENDING_HOD'::od_request_status else 'REJECTED_BY_FACULTY'::od_request_status end;
-  update od_request_faculty set status=case when p_approved then 'APPROVED'::faculty_approval_status else 'REJECTED'::faculty_approval_status end, comment=nullif(trim(p_remarks),''), action_at=now() where od_request_id=p_request_id and faculty_id=actor.id;
-  update od_requests set status=next_status, faculty_id=actor.id, faculty_action_at=now(), faculty_remarks=nullif(trim(p_remarks),''), updated_at=now() where id=p_request_id;
-  insert into od_approval_history (od_request_id,actor_id,actor_role,action,from_status,to_status,remarks) values (p_request_id,actor.id,'faculty',case when p_approved then 'FACULTY_APPROVED' else 'FACULTY_REJECTED' end,'PENDING_FACULTY',next_status,p_remarks);
-  insert into notifications (user_id,od_request_id,type,title,message)
-    select distinct targets.user_id,p_request_id,case when p_approved then 'FACULTY_APPROVED' else 'FACULTY_REJECTED' end,
-      case when p_approved then 'Faculty approved OD request' else 'Faculty rejected OD request' end,
-      coalesce(nullif(trim(p_remarks),''),case when p_approved then 'Your OD request is pending HOD review.' else 'Your OD request was rejected by faculty.' end)
-    from (select request_row.requester_id user_id union select student_id from od_request_students where od_request_id=p_request_id) targets;
-  if p_approved then
-    insert into notifications (user_id,od_request_id,type,title,message) select p.id,p_request_id,'OD_PENDING_HOD','OD request requires HOD review','A faculty-approved OD request is ready for your review.' from profiles p where p.role='hod' and p.is_active and p.department_id=actor.department_id;
-  end if;
-end $$;
+-- ============================================================
+-- 13. STUDENT ADD OD STUDENTS
+-- ============================================================
 
-create or replace function decide_od_request_hod(p_request_id uuid,p_approved boolean,p_remarks text default null)
-returns void language plpgsql security definer set search_path = public as $$
-declare actor profiles := active_profile_or_error(); request_row od_requests; next_status od_request_status;
-begin
-  if actor.role<>'hod' or (not p_approved and nullif(trim(p_remarks),'') is null) then raise exception 'FORBIDDEN' using errcode='P0001'; end if;
-  select * into request_row from od_requests where id=p_request_id for update;
-  if request_row.id is null or request_row.department_id<>actor.department_id or request_row.status<>'PENDING_HOD'
-    or request_row.faculty_id is null or not exists(select 1 from od_request_faculty where od_request_id=p_request_id and faculty_id=request_row.faculty_id and status='APPROVED') then raise exception 'INVALID_STATUS_TRANSITION' using errcode='P0001'; end if;
-  next_status := case when p_approved then 'APPROVED'::od_request_status else 'REJECTED_BY_HOD'::od_request_status end;
-  update od_requests set status=next_status, hod_id=actor.id, hod_action_at=now(), hod_remarks=nullif(trim(p_remarks),''), updated_at=now() where id=p_request_id;
-  insert into od_approval_history (od_request_id,actor_id,actor_role,action,from_status,to_status,remarks) values (p_request_id,actor.id,'hod',case when p_approved then 'HOD_APPROVED' else 'HOD_REJECTED' end,'PENDING_HOD',next_status,p_remarks);
-  insert into notifications (user_id,od_request_id,type,title,message)
-    select distinct targets.user_id,p_request_id,case when p_approved then 'HOD_APPROVED' else 'HOD_REJECTED' end,
-      case when p_approved then 'OD request approved' else 'OD request rejected by HOD' end,
-      coalesce(nullif(trim(p_remarks),''),case when p_approved then 'Your OD request has been approved.' else 'Your OD request was rejected by the HOD.' end)
-    from (select request_row.requester_id user_id union select student_id from od_request_students where od_request_id=p_request_id union select faculty_id from od_request_faculty where od_request_id=p_request_id) targets;
-end $$;
+DROP POLICY IF EXISTS "od_request_students_student_insert"
+ON public.od_request_students;
 
-create or replace function mark_od_attendance(p_request_id uuid,p_student_id uuid,p_status od_attendance_status)
-returns uuid language plpgsql security definer set search_path = public as $$
-declare actor profiles := active_profile_or_error(); request_row od_requests; attendance_id uuid;
-begin
-  if actor.role<>'faculty' then raise exception 'FORBIDDEN' using errcode='P0001'; end if;
-  select * into request_row from od_requests where id=p_request_id for share;
-  if request_row.id is null or request_row.status<>'APPROVED' or request_row.department_id<>actor.department_id
-    or not exists(select 1 from od_request_students where od_request_id=p_request_id and student_id=p_student_id) then raise exception 'FORBIDDEN' using errcode='P0001'; end if;
-  insert into od_attendance (od_request_id,student_id,attendance_status,marked_by)
-  values(p_request_id,p_student_id,p_status,actor.id)
-  on conflict (od_request_id,student_id) do update set attendance_status=excluded.attendance_status,marked_by=excluded.marked_by,marked_at=now(),updated_at=now()
-  returning id into attendance_id;
-  return attendance_id;
-end $$;
 
-create or replace function withdraw_od_request(p_request_id uuid)
-returns void language plpgsql security definer set search_path = public as $$
-declare actor profiles := active_profile_or_error(); request_row od_requests;
-begin
-  if actor.role<>'student' then raise exception 'FORBIDDEN' using errcode='P0001'; end if;
-  select * into request_row from od_requests where id=p_request_id for update;
-  if request_row.id is null or request_row.requester_id<>actor.id or request_row.status not in ('PENDING_FACULTY','PENDING_HOD') then raise exception 'INVALID_STATUS_TRANSITION' using errcode='P0001'; end if;
-  update od_requests set status='WITHDRAWN',updated_at=now() where id=p_request_id;
-  insert into od_approval_history (od_request_id,actor_id,actor_role,action,from_status,to_status) values(p_request_id,actor.id,'student','WITHDRAWN',request_row.status,'WITHDRAWN');
-  insert into notifications (user_id,od_request_id,type,title,message)
-    select distinct targets.user_id,p_request_id,'OD_REQUEST_WITHDRAWN','OD request withdrawn','The requester withdrew this OD request.'
-    from (select student_id user_id from od_request_students where od_request_id=p_request_id union select faculty_id from od_request_faculty where od_request_id=p_request_id) targets;
-end $$;
+CREATE POLICY "od_request_students_student_insert"
+ON public.od_request_students
+FOR INSERT
+TO authenticated
+WITH CHECK (
 
-grant execute on function complete_student_profile(text,text,text), search_ece_students(text), submit_od_request(jsonb), decide_od_request_faculty(uuid,boolean,text), decide_od_request_hod(uuid,boolean,text), mark_od_attendance(uuid,uuid,od_attendance_status), withdraw_od_request(uuid) to authenticated;
-revoke all on function complete_student_profile(text,text,text), search_ece_students(text), submit_od_request(jsonb), decide_od_request_faculty(uuid,boolean,text), decide_od_request_hod(uuid,boolean,text), mark_od_attendance(uuid,uuid,od_attendance_status), withdraw_od_request(uuid) from public, anon;
+    public.current_role() = 'student'
+
+    AND EXISTS (
+        SELECT 1
+        FROM public.od_requests r
+        WHERE r.id = request_id
+          AND r.requester_id = public.current_profile_id()
+          AND r.status = 'PENDING_FACULTY'
+    )
+
+    AND EXISTS (
+        SELECT 1
+        FROM public.profiles p
+        WHERE p.id = student_id
+          AND p.role = 'student'
+          AND p.is_active = TRUE
+          AND p.department_id = public.current_user_department()
+    )
+);
+
+
+-- ============================================================
+-- 14. SUBMIT OD REQUEST
+-- ============================================================
+--
+-- Supports:
+--
+-- Requester only
+-- Requester + other students
+-- Other students
+--
+-- No artificial low student limit.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.submit_od_request(
+    p_payload JSONB
+)
+RETURNS JSONB
+LANGUAGE PLPGSQL
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+
+    actor public.profiles;
+
+    request_id UUID;
+
+    student_id UUID;
+
+    event_date_value DATE;
+
+    start_time_value TIME;
+
+    end_time_value TIME;
+
+    duplicate_found BOOLEAN := FALSE;
+
+    selected_student_count INTEGER;
+
+    valid_student_count INTEGER;
+
+BEGIN
+
+    actor := public.active_profile_or_error();
+
+
+    -- --------------------------------------------------------
+    -- Only students submit ODs
+    -- --------------------------------------------------------
+
+    IF actor.role <> 'student' THEN
+
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- --------------------------------------------------------
+    -- Required student profile information
+    -- --------------------------------------------------------
+
+    IF actor.department_id IS NULL
+       OR actor.register_number IS NULL
+       OR actor.section IS NULL
+       OR actor.year IS NULL THEN
+
+        RAISE EXCEPTION 'Complete your student profile before submitting an OD.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- --------------------------------------------------------
+    -- Required fields
+    -- --------------------------------------------------------
+
+    IF NULLIF(TRIM(p_payload->>'event_name'), '') IS NULL THEN
+
+        RAISE EXCEPTION 'Event name is required.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF NULLIF(TRIM(p_payload->>'od_category'), '') IS NULL THEN
+
+        RAISE EXCEPTION 'OD category is required.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF NULLIF(TRIM(p_payload->>'reason'), '') IS NULL THEN
+
+        RAISE EXCEPTION 'Reason is required.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF p_payload->>'event_date' IS NULL THEN
+
+        RAISE EXCEPTION 'Event date is required.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF p_payload->>'start_period' IS NULL
+       OR p_payload->>'end_period' IS NULL THEN
+
+        RAISE EXCEPTION 'OD period is required.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    event_date_value :=
+        (p_payload->>'event_date')::DATE;
+
+
+    start_time_value :=
+        NULLIF(TRIM(p_payload->>'start_time'), '')::TIME;
+
+
+    end_time_value :=
+        NULLIF(TRIM(p_payload->>'end_time'), '')::TIME;
+
+
+    -- --------------------------------------------------------
+    -- Validate periods
+    -- --------------------------------------------------------
+
+    IF (p_payload->>'start_period')::INTEGER NOT BETWEEN 1 AND 9
+       OR (p_payload->>'end_period')::INTEGER NOT BETWEEN 1 AND 9 THEN
+
+        RAISE EXCEPTION 'Period must be between 1 and 9.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF (p_payload->>'end_period')::INTEGER
+       <
+       (p_payload->>'start_period')::INTEGER THEN
+
+        RAISE EXCEPTION 'End period cannot be before start period.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF start_time_value IS NOT NULL
+       AND end_time_value IS NOT NULL
+       AND end_time_value <= start_time_value THEN
+
+        RAISE EXCEPTION 'End time must be after start time.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- --------------------------------------------------------
+    -- Student IDs must be supplied as array
+    -- --------------------------------------------------------
+
+    IF COALESCE(
+        JSONB_TYPEOF(p_payload->'student_ids'),
+        ''
+    ) <> 'array' THEN
+
+        RAISE EXCEPTION 'Select at least one OD student.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    selected_student_count :=
+        JSONB_ARRAY_LENGTH(
+            p_payload->'student_ids'
+        );
+
+
+    IF selected_student_count < 1 THEN
+
+        RAISE EXCEPTION 'Select at least one OD student.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- --------------------------------------------------------
+    -- Validate selected students
+    -- --------------------------------------------------------
+
+    SELECT COUNT(*)
+    INTO valid_student_count
+    FROM JSONB_ARRAY_ELEMENTS_TEXT(
+        p_payload->'student_ids'
+    ) AS x(value)
+    JOIN public.profiles p
+      ON p.id = x.value::UUID
+     AND p.role = 'student'
+     AND p.is_active = TRUE
+     AND p.department_id = actor.department_id;
+
+
+    IF valid_student_count <> selected_student_count THEN
+
+        RAISE EXCEPTION 'One or more selected students are invalid.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- --------------------------------------------------------
+    -- Prevent duplicate student selection
+    -- --------------------------------------------------------
+
+    IF selected_student_count <>
+       (
+           SELECT COUNT(DISTINCT x.value::UUID)
+           FROM JSONB_ARRAY_ELEMENTS_TEXT(
+               p_payload->'student_ids'
+           ) AS x(value)
+       ) THEN
+
+        RAISE EXCEPTION 'A student cannot be selected more than once.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- --------------------------------------------------------
+    -- Requester must be included in OD students
+    -- --------------------------------------------------------
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM JSONB_ARRAY_ELEMENTS_TEXT(
+            p_payload->'student_ids'
+        ) AS x(value)
+        WHERE x.value::UUID = actor.id
+    ) THEN
+
+        RAISE EXCEPTION 'The requester must be included in the OD student list.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- --------------------------------------------------------
+    -- Detect potential duplicate
+    -- --------------------------------------------------------
+
+    SELECT EXISTS (
+
+        SELECT 1
+
+        FROM public.od_requests r
+
+        JOIN public.od_request_students ors
+          ON ors.request_id = r.id
+
+        WHERE r.department_id = actor.department_id
+
+          AND r.event_date = event_date_value
+
+          AND LOWER(r.event_name)
+              =
+              LOWER(TRIM(p_payload->>'event_name'))
+
+          AND r.status NOT IN (
+              'REJECTED_BY_FACULTY',
+              'REJECTED_BY_HOD',
+              'WITHDRAWN'
+          )
+
+          AND (
+              r.start_time IS NULL
+              OR start_time_value IS NULL
+              OR start_time_value < COALESCE(
+                    r.end_time,
+                    '23:59:59'::TIME
+                 )
+          )
+
+          AND (
+              r.end_time IS NULL
+              OR end_time_value IS NULL
+              OR r.start_time < end_time_value
+          )
+
+          AND ors.student_id IN (
+              SELECT x.value::UUID
+              FROM JSONB_ARRAY_ELEMENTS_TEXT(
+                  p_payload->'student_ids'
+              ) AS x(value)
+          )
+
+    )
+
+    INTO duplicate_found;
+
+
+    -- --------------------------------------------------------
+    -- Create request
+    -- --------------------------------------------------------
+
+    INSERT INTO public.od_requests (
+        requester_id,
+        department_id,
+        event_name,
+        od_category,
+        reason,
+        venue,
+        organization,
+        event_date,
+        start_period,
+        end_period,
+        start_time,
+        end_time,
+        status
+    )
+
+    VALUES (
+        actor.id,
+        actor.department_id,
+        TRIM(p_payload->>'event_name'),
+        TRIM(p_payload->>'od_category'),
+        TRIM(p_payload->>'reason'),
+        NULLIF(TRIM(p_payload->>'venue'), ''),
+        NULLIF(TRIM(p_payload->>'organization'), ''),
+        event_date_value,
+        (p_payload->>'start_period')::INTEGER,
+        (p_payload->>'end_period')::INTEGER,
+        start_time_value,
+        end_time_value,
+        'PENDING_FACULTY'
+    )
+
+    RETURNING id INTO request_id;
+
+
+    -- --------------------------------------------------------
+    -- Add students
+    -- --------------------------------------------------------
+
+    INSERT INTO public.od_request_students (
+        request_id,
+        student_id
+    )
+
+    SELECT
+        request_id,
+        x.value::UUID
+
+    FROM JSONB_ARRAY_ELEMENTS_TEXT(
+        p_payload->'student_ids'
+    ) AS x(value);
+
+
+    -- --------------------------------------------------------
+    -- Audit
+    -- --------------------------------------------------------
+
+    INSERT INTO public.audit_logs (
+        actor_id,
+        request_id,
+        action,
+        metadata
+    )
+
+    VALUES (
+        actor.id,
+        request_id,
+        'OD_SUBMITTED',
+        jsonb_build_object(
+            'student_count',
+            selected_student_count,
+            'potential_duplicate',
+            duplicate_found
+        )
+    );
+
+
+    -- --------------------------------------------------------
+    -- Notify requester + selected students
+    -- --------------------------------------------------------
+
+    INSERT INTO public.notifications (
+        user_id,
+        title,
+        message,
+        type,
+        reference_id
+    )
+
+    SELECT DISTINCT
+        x.value::UUID,
+        'OD request submitted',
+        'Your OD request has been submitted and is waiting for Faculty approval.',
+        'OD_SUBMITTED',
+        request_id
+
+    FROM JSONB_ARRAY_ELEMENTS_TEXT(
+        p_payload->'student_ids'
+    ) AS x(value);
+
+
+    -- --------------------------------------------------------
+    -- Notify department faculty
+    -- --------------------------------------------------------
+
+    INSERT INTO public.notifications (
+        user_id,
+        title,
+        message,
+        type,
+        reference_id
+    )
+
+    SELECT
+        p.id,
+        'New OD request',
+        'A new OD request is waiting for Faculty approval.',
+        'OD_PENDING_FACULTY',
+        request_id
+
+    FROM public.profiles p
+
+    WHERE p.role = 'faculty'
+      AND p.is_active = TRUE
+      AND p.department_id = actor.department_id;
+
+
+    RETURN JSONB_BUILD_OBJECT(
+        'id',
+        request_id,
+        'potentialDuplicate',
+        duplicate_found
+    );
+
+END;
+$$;
+
+
+-- ============================================================
+-- 15. FACULTY DECISION
+-- ============================================================
+--
+-- PENDING_FACULTY
+--       ↓
+-- APPROVED → PENDING_HOD
+--
+-- PENDING_FACULTY
+--       ↓
+-- REJECTED_BY_FACULTY
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.decide_od_request_faculty(
+    p_request_id UUID,
+    p_approved BOOLEAN,
+    p_remarks TEXT DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE PLPGSQL
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    actor public.profiles;
+    request_row public.od_requests;
+    next_status public.od_status;
+BEGIN
+
+    actor := public.active_profile_or_error();
+
+
+    IF actor.role <> 'faculty' THEN
+
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF NOT p_approved
+       AND NULLIF(TRIM(p_remarks), '') IS NULL THEN
+
+        RAISE EXCEPTION 'Rejection remarks are required.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    SELECT *
+    INTO request_row
+    FROM public.od_requests
+    WHERE id = p_request_id
+    FOR UPDATE;
+
+
+    IF request_row.id IS NULL THEN
+
+        RAISE EXCEPTION 'REQUEST_NOT_FOUND'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF request_row.department_id <> actor.department_id THEN
+
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF request_row.status <> 'PENDING_FACULTY' THEN
+
+        RAISE EXCEPTION 'INVALID_STATUS_TRANSITION'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF p_approved THEN
+
+        next_status := 'PENDING_HOD';
+
+    ELSE
+
+        next_status := 'REJECTED_BY_FACULTY';
+
+    END IF;
+
+
+    UPDATE public.od_requests
+
+    SET
+        status = next_status,
+        faculty_decision_by = actor.id,
+        faculty_decision_at = NOW(),
+        faculty_remarks = NULLIF(TRIM(p_remarks), ''),
+        updated_at = NOW()
+
+    WHERE id = p_request_id;
+
+
+    INSERT INTO public.audit_logs (
+        actor_id,
+        request_id,
+        action,
+        metadata
+    )
+
+    VALUES (
+        actor.id,
+        p_request_id,
+        CASE
+            WHEN p_approved
+            THEN 'FACULTY_APPROVED'
+            ELSE 'FACULTY_REJECTED'
+        END,
+        jsonb_build_object(
+            'remarks',
+            p_remarks
+        )
+    );
+
+
+    INSERT INTO public.notifications (
+        user_id,
+        title,
+        message,
+        type,
+        reference_id
+    )
+
+    VALUES (
+        request_row.requester_id,
+
+        CASE
+            WHEN p_approved
+            THEN 'Faculty approved your OD'
+            ELSE 'Faculty rejected your OD'
+        END,
+
+        COALESCE(
+            NULLIF(TRIM(p_remarks), ''),
+            CASE
+                WHEN p_approved
+                THEN 'Your OD request is now waiting for HOD approval.'
+                ELSE 'Your OD request was rejected by Faculty.'
+            END
+        ),
+
+        CASE
+            WHEN p_approved
+            THEN 'FACULTY_APPROVED'
+            ELSE 'FACULTY_REJECTED'
+        END,
+
+        p_request_id
+    );
+
+
+    -- Notify all HODs in department after faculty approval.
+
+    IF p_approved THEN
+
+        INSERT INTO public.notifications (
+            user_id,
+            title,
+            message,
+            type,
+            reference_id
+        )
+
+        SELECT
+            p.id,
+            'OD waiting for HOD approval',
+            'A Faculty-approved OD request requires your review.',
+            'OD_PENDING_HOD',
+            p_request_id
+
+        FROM public.profiles p
+
+        WHERE p.role = 'hod'
+          AND p.is_active = TRUE
+          AND p.department_id = actor.department_id;
+
+    END IF;
+
+END;
+$$;
+
+
+-- ============================================================
+-- 16. HOD DECISION
+-- ============================================================
+--
+-- PENDING_HOD
+--       ↓
+-- APPROVED
+--
+-- PENDING_HOD
+--       ↓
+-- REJECTED_BY_HOD
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.decide_od_request_hod(
+    p_request_id UUID,
+    p_approved BOOLEAN,
+    p_remarks TEXT DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE PLPGSQL
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    actor public.profiles;
+    request_row public.od_requests;
+    next_status public.od_status;
+BEGIN
+
+    actor := public.active_profile_or_error();
+
+
+    IF actor.role <> 'hod' THEN
+
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF NOT p_approved
+       AND NULLIF(TRIM(p_remarks), '') IS NULL THEN
+
+        RAISE EXCEPTION 'Rejection remarks are required.'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    SELECT *
+    INTO request_row
+    FROM public.od_requests
+    WHERE id = p_request_id
+    FOR UPDATE;
+
+
+    IF request_row.id IS NULL THEN
+
+        RAISE EXCEPTION 'REQUEST_NOT_FOUND'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF request_row.department_id <> actor.department_id THEN
+
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF request_row.status <> 'PENDING_HOD' THEN
+
+        RAISE EXCEPTION 'INVALID_STATUS_TRANSITION'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF request_row.faculty_decision_by IS NULL THEN
+
+        RAISE EXCEPTION 'FACULTY_APPROVAL_REQUIRED'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF p_approved THEN
+
+        next_status := 'APPROVED';
+
+    ELSE
+
+        next_status := 'REJECTED_BY_HOD';
+
+    END IF;
+
+
+    UPDATE public.od_requests
+
+    SET
+        status = next_status,
+        hod_decision_by = actor.id,
+        hod_decision_at = NOW(),
+        hod_remarks = NULLIF(TRIM(p_remarks), ''),
+        updated_at = NOW()
+
+    WHERE id = p_request_id;
+
+
+    INSERT INTO public.audit_logs (
+        actor_id,
+        request_id,
+        action,
+        metadata
+    )
+
+    VALUES (
+        actor.id,
+        p_request_id,
+
+        CASE
+            WHEN p_approved
+            THEN 'HOD_APPROVED'
+            ELSE 'HOD_REJECTED'
+        END,
+
+        jsonb_build_object(
+            'remarks',
+            p_remarks
+        )
+    );
+
+
+    -- Notify requester.
+
+    INSERT INTO public.notifications (
+        user_id,
+        title,
+        message,
+        type,
+        reference_id
+    )
+
+    VALUES (
+        request_row.requester_id,
+
+        CASE
+            WHEN p_approved
+            THEN 'OD approved'
+            ELSE 'OD rejected by HOD'
+        END,
+
+        COALESCE(
+            NULLIF(TRIM(p_remarks), ''),
+            CASE
+                WHEN p_approved
+                THEN 'Your OD request has been approved by the HOD.'
+                ELSE 'Your OD request was rejected by the HOD.'
+            END
+        ),
+
+        CASE
+            WHEN p_approved
+            THEN 'HOD_APPROVED'
+            ELSE 'HOD_REJECTED'
+        END,
+
+        p_request_id
+    );
+
+
+    -- Notify every student included in approved/rejected OD.
+
+    INSERT INTO public.notifications (
+        user_id,
+        title,
+        message,
+        type,
+        reference_id
+    )
+
+    SELECT DISTINCT
+        ors.student_id,
+
+        CASE
+            WHEN p_approved
+            THEN 'OD approved'
+            ELSE 'OD rejected by HOD'
+        END,
+
+        CASE
+            WHEN p_approved
+            THEN 'An OD request containing your name has been approved.'
+            ELSE 'An OD request containing your name has been rejected.'
+        END,
+
+        CASE
+            WHEN p_approved
+            THEN 'HOD_APPROVED'
+            ELSE 'HOD_REJECTED'
+        END,
+
+        p_request_id
+
+    FROM public.od_request_students ors
+
+    WHERE ors.request_id = p_request_id
+      AND ors.student_id <> request_row.requester_id;
+
+
+    -- If approved, notify faculty for attendance.
+
+    IF p_approved THEN
+
+        INSERT INTO public.notifications (
+            user_id,
+            title,
+            message,
+            type,
+            reference_id
+        )
+
+        SELECT DISTINCT
+            p.id,
+            'Approved OD ready for attendance',
+            'An approved OD is ready for attendance marking.',
+            'OD_READY_FOR_ATTENDANCE',
+            p_request_id
+
+        FROM public.profiles p
+
+        WHERE p.role = 'faculty'
+          AND p.is_active = TRUE
+          AND p.department_id = actor.department_id;
+
+    END IF;
+
+END;
+$$;
+
+
+-- ============================================================
+-- 17. ATTENDANCE
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.mark_od_attendance(
+    p_request_id UUID,
+    p_student_id UUID,
+    p_status public.attendance_status
+)
+RETURNS UUID
+LANGUAGE PLPGSQL
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    actor public.profiles;
+    request_row public.od_requests;
+    attendance_id UUID;
+BEGIN
+
+    actor := public.active_profile_or_error();
+
+
+    IF actor.role <> 'faculty' THEN
+
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    SELECT *
+    INTO request_row
+    FROM public.od_requests
+    WHERE id = p_request_id
+    FOR SHARE;
+
+
+    IF request_row.id IS NULL THEN
+
+        RAISE EXCEPTION 'REQUEST_NOT_FOUND'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF request_row.status <> 'APPROVED' THEN
+
+        RAISE EXCEPTION 'OD_NOT_APPROVED'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF request_row.department_id <> actor.department_id THEN
+
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM public.od_request_students
+        WHERE request_id = p_request_id
+          AND student_id = p_student_id
+    ) THEN
+
+        RAISE EXCEPTION 'STUDENT_NOT_PART_OF_OD'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    INSERT INTO public.od_attendance (
+        request_id,
+        student_id,
+        marked_by,
+        status,
+        marked_at
+    )
+
+    VALUES (
+        p_request_id,
+        p_student_id,
+        actor.id,
+        p_status,
+        NOW()
+    )
+
+    ON CONFLICT (request_id, student_id)
+
+    DO UPDATE SET
+        status = EXCLUDED.status,
+        marked_by = EXCLUDED.marked_by,
+        marked_at = NOW(),
+        updated_at = NOW()
+
+    RETURNING id
+    INTO attendance_id;
+
+
+    INSERT INTO public.audit_logs (
+        actor_id,
+        request_id,
+        action,
+        metadata
+    )
+
+    VALUES (
+        actor.id,
+        p_request_id,
+        'ATTENDANCE_MARKED',
+        jsonb_build_object(
+            'student_id',
+            p_student_id,
+            'status',
+            p_status
+        )
+    );
+
+
+    RETURN attendance_id;
+
+END;
+$$;
+
+
+-- ============================================================
+-- 18. WITHDRAW OD
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.withdraw_od_request(
+    p_request_id UUID
+)
+RETURNS VOID
+LANGUAGE PLPGSQL
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    actor public.profiles;
+    request_row public.od_requests;
+BEGIN
+
+    actor := public.active_profile_or_error();
+
+
+    IF actor.role <> 'student' THEN
+
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    SELECT *
+    INTO request_row
+    FROM public.od_requests
+    WHERE id = p_request_id
+    FOR UPDATE;
+
+
+    IF request_row.id IS NULL THEN
+
+        RAISE EXCEPTION 'REQUEST_NOT_FOUND'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF request_row.requester_id <> actor.id THEN
+
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF request_row.status NOT IN (
+        'PENDING_FACULTY',
+        'PENDING_HOD'
+    ) THEN
+
+        RAISE EXCEPTION 'INVALID_STATUS_TRANSITION'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    UPDATE public.od_requests
+
+    SET
+        status = 'WITHDRAWN',
+        updated_at = NOW()
+
+    WHERE id = p_request_id;
+
+
+    INSERT INTO public.audit_logs (
+        actor_id,
+        request_id,
+        action
+    )
+
+    VALUES (
+        actor.id,
+        p_request_id,
+        'OD_WITHDRAWN'
+    );
+
+
+    INSERT INTO public.notifications (
+        user_id,
+        title,
+        message,
+        type,
+        reference_id
+    )
+
+    SELECT DISTINCT
+        targets.user_id,
+        'OD request withdrawn',
+        'The requester withdrew this OD request.',
+        'OD_WITHDRAWN',
+        p_request_id
+
+    FROM (
+
+        SELECT
+            p.requester_id AS user_id
+
+        UNION
+
+        SELECT
+            ors.student_id
+        FROM public.od_request_students ors
+        WHERE ors.request_id = p_request_id
+
+    ) targets;
+
+END;
+$$;
+
+
+-- ============================================================
+-- 19. MARK NOTIFICATION READ
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.mark_notification_read(
+    p_notification_id UUID DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE PLPGSQL
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    actor_id UUID;
+BEGIN
+
+    actor_id := public.current_profile_id();
+
+
+    IF actor_id IS NULL THEN
+
+        RAISE EXCEPTION 'PROFILE_NOT_FOUND'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    UPDATE public.notifications
+
+    SET is_read = TRUE
+
+    WHERE user_id = actor_id
+      AND (
+          p_notification_id IS NULL
+          OR id = p_notification_id
+      );
+
+
+    IF p_notification_id IS NOT NULL
+       AND NOT FOUND THEN
+
+        RAISE EXCEPTION 'NOT_FOUND'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+END;
+$$;
+
+
+-- ============================================================
+-- 20. FUNCTION PERMISSIONS
+-- ============================================================
+
+REVOKE ALL
+ON FUNCTION public.submit_od_request(JSONB)
+FROM PUBLIC, anon;
+
+REVOKE ALL
+ON FUNCTION public.decide_od_request_faculty(UUID, BOOLEAN, TEXT)
+FROM PUBLIC, anon;
+
+REVOKE ALL
+ON FUNCTION public.decide_od_request_hod(UUID, BOOLEAN, TEXT)
+FROM PUBLIC, anon;
+
+REVOKE ALL
+ON FUNCTION public.mark_od_attendance(
+    UUID,
+    UUID,
+    public.attendance_status
+)
+FROM PUBLIC, anon;
+
+REVOKE ALL
+ON FUNCTION public.withdraw_od_request(UUID)
+FROM PUBLIC, anon;
+
+REVOKE ALL
+ON FUNCTION public.mark_notification_read(UUID)
+FROM PUBLIC, anon;
+
+
+GRANT EXECUTE
+ON FUNCTION public.submit_od_request(JSONB)
+TO authenticated;
+
+GRANT EXECUTE
+ON FUNCTION public.decide_od_request_faculty(UUID, BOOLEAN, TEXT)
+TO authenticated;
+
+GRANT EXECUTE
+ON FUNCTION public.decide_od_request_hod(UUID, BOOLEAN, TEXT)
+TO authenticated;
+
+GRANT EXECUTE
+ON FUNCTION public.mark_od_attendance(
+    UUID,
+    UUID,
+    public.attendance_status
+)
+TO authenticated;
+
+GRANT EXECUTE
+ON FUNCTION public.withdraw_od_request(UUID)
+TO authenticated;
+
+GRANT EXECUTE
+ON FUNCTION public.mark_notification_read(UUID)
+TO authenticated;
+
+
+-- ============================================================
+-- 21. AUDIT LOG POLICY
+-- ============================================================
+
+DROP POLICY IF EXISTS "audit_logs_admin_read"
+ON public.audit_logs;
+
+CREATE POLICY "audit_logs_admin_read"
+ON public.audit_logs
+FOR SELECT
+TO authenticated
+USING (
+    public.has_admin_access()
+);
+
+
+-- ============================================================
+-- 22. NOTIFICATION SECURITY
+-- ============================================================
+
+DROP POLICY IF EXISTS "notifications_read_own"
+ON public.notifications;
+
+CREATE POLICY "notifications_read_own"
+ON public.notifications
+FOR SELECT
+TO authenticated
+USING (
+    user_id = public.current_profile_id()
+);
+
+
+-- Users cannot create arbitrary notifications.
+
+DROP POLICY IF EXISTS "notifications_admin_insert"
+ON public.notifications;
+
+CREATE POLICY "notifications_admin_insert"
+ON public.notifications
+FOR INSERT
+TO authenticated
+WITH CHECK (
+    public.has_admin_access()
+);
+
+
+-- ============================================================
+-- 23. ATTENDANCE READ
+-- ============================================================
+
+DROP POLICY IF EXISTS "attendance_read"
+ON public.od_attendance;
+
+
+CREATE POLICY "attendance_read"
+ON public.od_attendance
+FOR SELECT
+TO authenticated
+USING (
+
+    public.has_admin_access()
+
+    OR student_id = public.current_profile_id()
+
+    OR (
+        public.current_role() IN ('faculty', 'hod')
+        AND EXISTS (
+            SELECT 1
+            FROM public.od_requests r
+            WHERE r.id = od_attendance.request_id
+              AND r.department_id = public.current_user_department()
+        )
+    )
+);
+
+
+-- ============================================================
+-- 24. ATTENDANCE WRITE
+-- ============================================================
+
+DROP POLICY IF EXISTS "faculty_attendance_insert"
+ON public.od_attendance;
+
+DROP POLICY IF EXISTS "faculty_attendance_update"
+ON public.od_attendance;
+
+
+-- Attendance is written through mark_od_attendance().
+-- Direct INSERT/UPDATE is intentionally unavailable.
+
+
+-- ============================================================
+-- 25. FINAL FUNCTION LIST
+-- ============================================================
+
+SELECT
+    routine_name
+FROM information_schema.routines
+WHERE routine_schema = 'public'
+AND routine_name IN (
+    'current_profile',
+    'current_role',
+    'active_profile_or_error',
+    'search_ece_students',
+    'submit_od_request',
+    'decide_od_request_faculty',
+    'decide_od_request_hod',
+    'mark_od_attendance',
+    'withdraw_od_request',
+    'mark_notification_read'
+)
+ORDER BY routine_name;
+
+
+-- ============================================================
+-- 26. FINAL TABLE CHECK
+-- ============================================================
+
+SELECT
+    table_name
+FROM information_schema.tables
+WHERE table_schema = 'public'
+ORDER BY table_name;

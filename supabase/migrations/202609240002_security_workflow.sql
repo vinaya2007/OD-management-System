@@ -1,132 +1,1099 @@
--- Security and workflow corrections discovered during production audit.
+-- ============================================================
+-- SRMIST ECE OD MANAGEMENT SYSTEM
+-- PRODUCTION SECURITY + WORKFLOW HARDENING
+-- FOR THE NEW OD SCHEMA
+-- ============================================================
 
--- These lookups are used by RLS policies on profiles itself. Definer rights
--- prevent recursive RLS evaluation while still binding all lookups to auth.uid().
-create or replace function current_profile()
-returns profiles language sql stable security definer set search_path = public as $$
-  select * from public.profiles where auth_user_id = auth.uid() and is_active = true limit 1
+-- ============================================================
+-- 1. HELPER FUNCTIONS
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.current_profile()
+RETURNS public.profiles
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+    SELECT p
+    FROM public.profiles p
+    WHERE p.auth_user_id = auth.uid()
+      AND p.is_active = TRUE
+    LIMIT 1;
 $$;
-create or replace function current_role()
-returns user_role language sql stable security definer set search_path = public as $$
-  select role from public.profiles where auth_user_id = auth.uid() and is_active = true limit 1
+
+
+CREATE OR REPLACE FUNCTION public.current_role()
+RETURNS public.user_role
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+    SELECT p.role
+    FROM public.profiles p
+    WHERE p.auth_user_id = auth.uid()
+      AND p.is_active = TRUE
+    LIMIT 1;
 $$;
 
-drop policy if exists "scoped profile visibility" on profiles;
-create policy "scoped profile visibility" on profiles for select using (
-  auth.uid() = auth_user_id
-  or current_role() = 'admin'
-  or (current_role() in ('faculty', 'hod') and department_id = (current_profile()).department_id)
-  or (current_role() = 'student' and role = 'faculty' and is_active and department_id = (current_profile()).department_id)
+
+-- ============================================================
+-- 2. AUDIT LOGS
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS public.audit_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+
+    actor_id UUID
+        REFERENCES public.profiles(id)
+        ON DELETE SET NULL,
+
+    request_id UUID
+        REFERENCES public.od_requests(id)
+        ON DELETE SET NULL,
+
+    action TEXT NOT NULL,
+
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-drop policy if exists "approval visibility" on od_faculty_approvals;
-create policy "approval visibility" on od_faculty_approvals for select using (
-  faculty_id = (current_profile()).id
-  or current_role() = 'admin'
-  or (current_role() = 'hod' and exists (
-    select 1 from od_applications od
-    where od.id = od_faculty_approvals.od_id and od.department_id = (current_profile()).department_id
-  ))
-  or exists (select 1 from od_applications od where od.id = od_faculty_approvals.od_id and od.student_id = (current_profile()).id)
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor
+ON public.audit_logs(actor_id);
+
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_request
+ON public.audit_logs(request_id);
+
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action
+ON public.audit_logs(action);
+
+
+ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+
+
+-- Only Admin can read audit logs.
+
+DROP POLICY IF EXISTS "audit_logs_admin_read"
+ON public.audit_logs;
+
+CREATE POLICY "audit_logs_admin_read"
+ON public.audit_logs
+FOR SELECT
+TO authenticated
+USING (
+    public.has_admin_access()
 );
 
-drop policy if exists "users read limits" on od_limits;
-create policy "authenticated users read limits" on od_limits for select using (auth.uid() is not null);
-drop policy if exists "users read workflow settings" on workflow_settings;
-create policy "scoped workflow settings visibility" on workflow_settings for select using (
-  current_role() = 'admin' or department_id = (current_profile()).department_id
+
+-- ============================================================
+-- 3. PROFILE VISIBILITY
+-- ============================================================
+
+DROP POLICY IF EXISTS "profiles_read_own"
+ON public.profiles;
+
+DROP POLICY IF EXISTS "profiles_staff_read_department"
+ON public.profiles;
+
+DROP POLICY IF EXISTS "profiles_admin_read"
+ON public.profiles;
+
+DROP POLICY IF EXISTS "scoped_profile_visibility"
+ON public.profiles;
+
+
+CREATE POLICY "scoped_profile_visibility"
+ON public.profiles
+FOR SELECT
+TO authenticated
+USING (
+
+    -- Own profile
+    auth.uid() = auth_user_id
+
+    -- Admin
+    OR public.has_admin_access()
+
+    -- Faculty / HOD in same department
+    OR (
+        public.current_role() IN ('faculty', 'hod')
+        AND department_id = public.current_user_department()
+    )
+
+    -- Students can search active faculty in their department
+    OR (
+        public.current_role() = 'student'
+        AND role = 'faculty'
+        AND is_active = TRUE
+        AND department_id = public.current_user_department()
+    )
 );
 
-drop policy if exists "special permissions visibility" on special_permissions;
-create policy "special permissions visibility" on special_permissions for select using (
-  requested_by = (current_profile()).id
-  or approver_id = (current_profile()).id
-  or current_role() = 'admin'
-  or (current_role() = 'hod' and exists (
-    select 1 from od_applications od
-    where od.id = special_permissions.od_id and od.department_id = (current_profile()).department_id
-  ))
+
+-- ============================================================
+-- 4. STUDENT PROFILE SEARCH
+-- ============================================================
+--
+-- Students need to search other students when adding
+-- multiple students to an OD request.
+--
+-- This policy allows students to read active student
+-- profiles within their department.
+--
+-- ============================================================
+
+DROP POLICY IF EXISTS "students_read_department_students"
+ON public.profiles;
+
+CREATE POLICY "students_read_department_students"
+ON public.profiles
+FOR SELECT
+TO authenticated
+USING (
+    public.current_role() = 'student'
+    AND role = 'student'
+    AND is_active = TRUE
+    AND department_id = public.current_user_department()
 );
 
--- A special request is permitted only after the approved-OD category limit is met.
-create or replace function enforce_special_od_limit()
-returns trigger language plpgsql security definer set search_path = public as $$
-declare category_limit integer; approved_count integer;
-begin
-  select limit_count into category_limit from od_limits
-    where academic_year_id = new.academic_year_id and category = new.category and is_active limit 1;
-  select count(*) into approved_count from od_applications
-    where student_id = new.student_id and academic_year_id = new.academic_year_id and category = new.category and status = 'APPROVED';
-  if category_limit is not null and approved_count >= category_limit and not new.is_special then
-    raise exception 'OD_LIMIT_REACHED' using errcode = 'P0001';
-  end if;
-  if new.is_special and (category_limit is null or approved_count < category_limit) then
-    raise exception 'SPECIAL_PERMISSION_NOT_REQUIRED' using errcode = 'P0001';
-  end if;
-  return new;
-end $$;
-drop trigger if exists enforce_special_od_limit_before_insert on od_applications;
-create trigger enforce_special_od_limit_before_insert before insert on od_applications
-for each row execute function enforce_special_od_limit();
 
-revoke all on function submit_od_application(jsonb) from public, anon;
-revoke all on function decide_faculty_od(uuid, faculty_approval_status, text) from public, anon;
-revoke all on function decide_hod_od(uuid, boolean, text) from public, anon;
-revoke all on function replace_pending_faculty(uuid, uuid, uuid) from public, anon;
-revoke all on function withdraw_od(uuid) from public, anon;
-revoke all on function active_profile_or_error() from public, anon;
-revoke all on function active_academic_year_or_error() from public, anon;
-grant execute on function current_profile(), current_role(), submit_od_application(jsonb), decide_faculty_od(uuid, faculty_approval_status, text), decide_hod_od(uuid, boolean, text), replace_pending_faculty(uuid, uuid, uuid), withdraw_od(uuid) to authenticated;
+-- ============================================================
+-- 5. OD REQUEST VISIBILITY
+-- ============================================================
 
-create or replace function decide_hod_od(p_od_id uuid, p_approved boolean, p_comment text default null)
-returns void language plpgsql security definer set search_path = public as $$
-declare profile_row profiles := active_profile_or_error(); application od_applications;
-begin
-  if profile_row.role not in ('hod', 'admin') or (not p_approved and nullif(trim(p_comment), '') is null) then raise exception 'FORBIDDEN' using errcode = 'P0001'; end if;
-  select * into application from od_applications where id = p_od_id for update;
-  if application.id is null or application.department_id is distinct from profile_row.department_id or application.status <> 'HOD_REVIEW'
-    or exists (select 1 from od_faculty_approvals where od_id = p_od_id and status <> 'APPROVED')
-    or (application.is_special and application.special_permission_status <> 'APPROVED') then
-    raise exception 'INVALID_STATUS_TRANSITION' using errcode = 'P0001';
-  end if;
-  update od_applications set status = case when p_approved then 'APPROVED'::od_status else 'REJECTED'::od_status end where id = p_od_id;
-  insert into notifications (user_id, od_id, type, title, message) values (application.student_id, p_od_id, case when p_approved then 'HOD_APPROVED' else 'HOD_REJECTED' end, case when p_approved then 'OD approved' else 'OD rejected' end, coalesce(nullif(trim(p_comment), ''), case when p_approved then 'Your OD has been approved by the HOD.' else 'Your OD has been rejected by the HOD.' end));
-  insert into audit_logs (actor_id, od_id, action, metadata) values (profile_row.id, p_od_id, case when p_approved then 'HOD_APPROVED' else 'HOD_REJECTED' end, jsonb_build_object('comment', p_comment));
-end $$;
+DROP POLICY IF EXISTS "od_requests_student_read"
+ON public.od_requests;
 
-create or replace function decide_special_permission(p_od_id uuid, p_approved boolean, p_comment text default null)
-returns void language plpgsql security definer set search_path = public as $$
-declare profile_row profiles := active_profile_or_error(); application od_applications; permission_row special_permissions;
-begin
-  select * into application from od_applications where id = p_od_id for update;
-  select * into permission_row from special_permissions where od_id = p_od_id for update;
-  if application.id is null or permission_row.id is null
-    or (profile_row.role <> 'admin' and application.department_id is distinct from profile_row.department_id)
-    or profile_row.role not in ('hod', 'admin') or permission_row.status <> 'PENDING'
-    or application.status not in ('FACULTY_REVIEW', 'CORRECTION_REQUESTED', 'HOD_REVIEW')
-    or (permission_row.approver_id is not null and permission_row.approver_id <> profile_row.id)
-    or (not p_approved and nullif(trim(p_comment), '') is null) then
-    raise exception 'FORBIDDEN' using errcode = 'P0001';
-  end if;
-  update special_permissions set status = case when p_approved then 'APPROVED'::special_permission_status else 'REJECTED'::special_permission_status end,
-    approver_id = profile_row.id, approver_comment = nullif(trim(p_comment), ''), approved_at = case when p_approved then now() else null end
-    where id = permission_row.id;
-  update od_applications set special_permission_status = case when p_approved then 'APPROVED'::special_permission_status else 'REJECTED'::special_permission_status end where id = p_od_id;
-  if not p_approved then update od_applications set status = 'REJECTED' where id = p_od_id; end if;
-  insert into notifications (user_id, od_id, type, title, message) values (application.student_id, p_od_id,
-    case when p_approved then 'SPECIAL_PERMISSION_APPROVED' else 'SPECIAL_PERMISSION_REJECTED' end,
-    case when p_approved then 'Special permission approved' else 'Special permission rejected' end,
-    coalesce(nullif(trim(p_comment), ''), case when p_approved then 'Your special permission request was approved.' else 'Your special permission request was rejected.' end));
-  insert into audit_logs (actor_id, od_id, action) values (profile_row.id, p_od_id, case when p_approved then 'SPECIAL_PERMISSION_APPROVED' else 'SPECIAL_PERMISSION_REJECTED' end);
-end $$;
+DROP POLICY IF EXISTS "od_requests_faculty_read"
+ON public.od_requests;
 
-create or replace function mark_notification_read(p_notification_id uuid default null)
-returns void language plpgsql security definer set search_path = public as $$
-declare profile_row profiles := active_profile_or_error();
-begin
-  update notifications set is_read = true where user_id = profile_row.id and (p_notification_id is null or id = p_notification_id);
-  if p_notification_id is not null and not found then raise exception 'NOT_FOUND' using errcode = 'P0001'; end if;
-end $$;
-revoke all on function decide_special_permission(uuid, boolean, text), mark_notification_read(uuid) from public, anon;
-revoke all on function enforce_special_od_limit() from public, anon;
-grant execute on function decide_hod_od(uuid, boolean, text), decide_special_permission(uuid, boolean, text), mark_notification_read(uuid) to authenticated;
+DROP POLICY IF EXISTS "od_requests_hod_read"
+ON public.od_requests;
+
+DROP POLICY IF EXISTS "od_requests_admin_read"
+ON public.od_requests;
+
+
+CREATE POLICY "od_requests_scoped_read"
+ON public.od_requests
+FOR SELECT
+TO authenticated
+USING (
+
+    -- Admin
+    public.has_admin_access()
+
+    -- Faculty
+    OR (
+        public.current_role() = 'faculty'
+        AND department_id = public.current_user_department()
+    )
+
+    -- HOD
+    OR (
+        public.current_role() = 'hod'
+        AND department_id = public.current_user_department()
+    )
+
+    -- Requester
+    OR requester_id = public.current_profile_id()
+
+    -- Student included in OD
+    OR EXISTS (
+        SELECT 1
+        FROM public.od_request_students ors
+        WHERE ors.request_id = od_requests.id
+          AND ors.student_id = public.current_profile_id()
+    )
+);
+
+
+-- ============================================================
+-- 6. OD REQUEST INSERT SECURITY
+-- ============================================================
+
+DROP POLICY IF EXISTS "od_requests_student_insert"
+ON public.od_requests;
+
+DROP POLICY IF EXISTS "od_requests_admin_insert"
+ON public.od_requests;
+
+
+CREATE POLICY "od_requests_student_insert"
+ON public.od_requests
+FOR INSERT
+TO authenticated
+WITH CHECK (
+
+    public.current_role() = 'student'
+
+    AND requester_id = public.current_profile_id()
+
+    AND department_id = public.current_user_department()
+
+    AND status = 'PENDING_FACULTY'
+
+    AND faculty_decision_by IS NULL
+
+    AND faculty_decision_at IS NULL
+
+    AND hod_decision_by IS NULL
+
+    AND hod_decision_at IS NULL
+);
+
+
+CREATE POLICY "od_requests_admin_insert"
+ON public.od_requests
+FOR INSERT
+TO authenticated
+WITH CHECK (
+    public.has_admin_access()
+);
+
+
+-- ============================================================
+-- 7. REMOVE DIRECT STUDENT/FACULTY/HOD OD UPDATES
+-- ============================================================
+--
+-- Approval/rejection MUST happen through secure functions.
+--
+-- This prevents users from simply changing:
+--
+-- status = 'APPROVED'
+--
+-- from the browser.
+--
+-- ============================================================
+
+DROP POLICY IF EXISTS "od_requests_admin_update"
+ON public.od_requests;
+
+
+CREATE POLICY "od_requests_admin_update"
+ON public.od_requests
+FOR UPDATE
+TO authenticated
+USING (
+    public.has_admin_access()
+)
+WITH CHECK (
+    public.has_admin_access()
+);
+
+
+-- ============================================================
+-- 8. OD STUDENT LINK SECURITY
+-- ============================================================
+
+DROP POLICY IF EXISTS "od_request_students_read"
+ON public.od_request_students;
+
+
+CREATE POLICY "od_request_students_read"
+ON public.od_request_students
+FOR SELECT
+TO authenticated
+USING (
+
+    public.has_admin_access()
+
+    OR student_id = public.current_profile_id()
+
+    OR EXISTS (
+        SELECT 1
+        FROM public.od_requests r
+        WHERE r.id = od_request_students.request_id
+        AND (
+            r.requester_id = public.current_profile_id()
+
+            OR (
+                public.current_role() IN ('faculty', 'hod')
+                AND r.department_id = public.current_user_department()
+            )
+        )
+    )
+);
+
+
+-- ============================================================
+-- 9. STUDENT CAN ADD STUDENTS TO OWN PENDING OD
+-- ============================================================
+
+DROP POLICY IF EXISTS "od_request_students_student_insert"
+ON public.od_request_students;
+
+
+CREATE POLICY "od_request_students_student_insert"
+ON public.od_request_students
+FOR INSERT
+TO authenticated
+WITH CHECK (
+
+    public.current_role() = 'student'
+
+    AND EXISTS (
+        SELECT 1
+        FROM public.od_requests r
+        WHERE r.id = request_id
+          AND r.requester_id = public.current_profile_id()
+          AND r.status = 'PENDING_FACULTY'
+    )
+
+    AND EXISTS (
+        SELECT 1
+        FROM public.profiles p
+        WHERE p.id = student_id
+          AND p.role = 'student'
+          AND p.is_active = TRUE
+          AND p.department_id = public.current_user_department()
+    )
+);
+
+
+-- ============================================================
+-- 10. FACULTY OD DECISION FUNCTION
+-- ============================================================
+--
+-- Faculty:
+--
+-- APPROVE:
+-- PENDING_FACULTY → PENDING_HOD
+--
+-- REJECT:
+-- PENDING_FACULTY → REJECTED_BY_FACULTY
+--
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.decide_faculty_od(
+    p_request_id UUID,
+    p_approved BOOLEAN,
+    p_comment TEXT DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE PLPGSQL
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    profile_row public.profiles;
+    request_row public.od_requests;
+BEGIN
+
+    SELECT *
+    INTO profile_row
+    FROM public.profiles
+    WHERE auth_user_id = auth.uid()
+      AND is_active = TRUE
+    LIMIT 1;
+
+    IF profile_row.id IS NULL THEN
+        RAISE EXCEPTION 'PROFILE_NOT_FOUND'
+            USING ERRCODE = 'P0001';
+    END IF;
+
+
+    -- Only Faculty/Admin can perform faculty decision.
+
+    IF profile_row.role NOT IN ('faculty', 'admin') THEN
+
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- Rejection requires a comment.
+
+    IF NOT p_approved
+       AND NULLIF(TRIM(p_comment), '') IS NULL THEN
+
+        RAISE EXCEPTION 'REJECTION_COMMENT_REQUIRED'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- Lock request.
+
+    SELECT *
+    INTO request_row
+    FROM public.od_requests
+    WHERE id = p_request_id
+    FOR UPDATE;
+
+
+    IF request_row.id IS NULL THEN
+
+        RAISE EXCEPTION 'REQUEST_NOT_FOUND'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- Faculty must belong to same department.
+
+    IF profile_row.role = 'faculty'
+       AND request_row.department_id IS DISTINCT FROM profile_row.department_id THEN
+
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- Request must currently be waiting for Faculty.
+
+    IF request_row.status <> 'PENDING_FACULTY' THEN
+
+        RAISE EXCEPTION 'INVALID_STATUS_TRANSITION'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- APPROVE
+
+    IF p_approved THEN
+
+        UPDATE public.od_requests
+        SET
+            status = 'PENDING_HOD',
+            faculty_decision_by = profile_row.id,
+            faculty_decision_at = NOW(),
+            faculty_remarks = NULLIF(TRIM(p_comment), ''),
+            updated_at = NOW()
+        WHERE id = p_request_id;
+
+
+        INSERT INTO public.notifications (
+            user_id,
+            title,
+            message,
+            type,
+            reference_id
+        )
+        VALUES (
+            request_row.requester_id,
+            'OD approved by Faculty',
+            'Your OD request has been approved by Faculty and sent to the HOD.',
+            'FACULTY_APPROVED',
+            p_request_id
+        );
+
+
+        INSERT INTO public.audit_logs (
+            actor_id,
+            request_id,
+            action,
+            metadata
+        )
+        VALUES (
+            profile_row.id,
+            p_request_id,
+            'FACULTY_APPROVED',
+            jsonb_build_object(
+                'comment',
+                p_comment
+            )
+        );
+
+
+    -- REJECT
+
+    ELSE
+
+        UPDATE public.od_requests
+        SET
+            status = 'REJECTED_BY_FACULTY',
+            faculty_decision_by = profile_row.id,
+            faculty_decision_at = NOW(),
+            faculty_remarks = NULLIF(TRIM(p_comment), ''),
+            updated_at = NOW()
+        WHERE id = p_request_id;
+
+
+        INSERT INTO public.notifications (
+            user_id,
+            title,
+            message,
+            type,
+            reference_id
+        )
+        VALUES (
+            request_row.requester_id,
+            'OD rejected by Faculty',
+            COALESCE(
+                NULLIF(TRIM(p_comment), ''),
+                'Your OD request has been rejected by Faculty.'
+            ),
+            'FACULTY_REJECTED',
+            p_request_id
+        );
+
+
+        INSERT INTO public.audit_logs (
+            actor_id,
+            request_id,
+            action,
+            metadata
+        )
+        VALUES (
+            profile_row.id,
+            p_request_id,
+            'FACULTY_REJECTED',
+            jsonb_build_object(
+                'comment',
+                p_comment
+            )
+        );
+
+    END IF;
+
+END;
+$$;
+
+
+-- ============================================================
+-- 11. HOD DECISION FUNCTION
+-- ============================================================
+--
+-- APPROVE:
+-- PENDING_HOD → APPROVED
+--
+-- REJECT:
+-- PENDING_HOD → REJECTED_BY_HOD
+--
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.decide_hod_od(
+    p_request_id UUID,
+    p_approved BOOLEAN,
+    p_comment TEXT DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE PLPGSQL
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    profile_row public.profiles;
+    request_row public.od_requests;
+BEGIN
+
+    SELECT *
+    INTO profile_row
+    FROM public.profiles
+    WHERE auth_user_id = auth.uid()
+      AND is_active = TRUE
+    LIMIT 1;
+
+
+    IF profile_row.id IS NULL THEN
+
+        RAISE EXCEPTION 'PROFILE_NOT_FOUND'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- Only HOD/Admin.
+
+    IF profile_row.role NOT IN ('hod', 'admin') THEN
+
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- Rejection requires comment.
+
+    IF NOT p_approved
+       AND NULLIF(TRIM(p_comment), '') IS NULL THEN
+
+        RAISE EXCEPTION 'REJECTION_COMMENT_REQUIRED'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- Lock request.
+
+    SELECT *
+    INTO request_row
+    FROM public.od_requests
+    WHERE id = p_request_id
+    FOR UPDATE;
+
+
+    IF request_row.id IS NULL THEN
+
+        RAISE EXCEPTION 'REQUEST_NOT_FOUND'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- HOD can only handle own department.
+
+    IF profile_row.role = 'hod'
+       AND request_row.department_id IS DISTINCT FROM profile_row.department_id THEN
+
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- Must already be approved by Faculty.
+
+    IF request_row.status <> 'PENDING_HOD' THEN
+
+        RAISE EXCEPTION 'INVALID_STATUS_TRANSITION'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    -- APPROVE
+
+    IF p_approved THEN
+
+        UPDATE public.od_requests
+        SET
+            status = 'APPROVED',
+            hod_decision_by = profile_row.id,
+            hod_decision_at = NOW(),
+            hod_remarks = NULLIF(TRIM(p_comment), ''),
+            updated_at = NOW()
+        WHERE id = p_request_id;
+
+
+        INSERT INTO public.notifications (
+            user_id,
+            title,
+            message,
+            type,
+            reference_id
+        )
+        VALUES (
+            request_row.requester_id,
+            'OD approved',
+            'Your OD request has been approved by the HOD.',
+            'HOD_APPROVED',
+            p_request_id
+        );
+
+
+        -- Notify all students included in the OD.
+
+        INSERT INTO public.notifications (
+            user_id,
+            title,
+            message,
+            type,
+            reference_id
+        )
+        SELECT
+            ors.student_id,
+            'OD approved',
+            'An OD request containing your name has been approved by the HOD.',
+            'HOD_APPROVED',
+            p_request_id
+        FROM public.od_request_students ors
+        WHERE ors.request_id = p_request_id
+          AND ors.student_id <> request_row.requester_id;
+
+
+        INSERT INTO public.audit_logs (
+            actor_id,
+            request_id,
+            action,
+            metadata
+        )
+        VALUES (
+            profile_row.id,
+            p_request_id,
+            'HOD_APPROVED',
+            jsonb_build_object(
+                'comment',
+                p_comment
+            )
+        );
+
+
+    -- REJECT
+
+    ELSE
+
+        UPDATE public.od_requests
+        SET
+            status = 'REJECTED_BY_HOD',
+            hod_decision_by = profile_row.id,
+            hod_decision_at = NOW(),
+            hod_remarks = NULLIF(TRIM(p_comment), ''),
+            updated_at = NOW()
+        WHERE id = p_request_id;
+
+
+        INSERT INTO public.notifications (
+            user_id,
+            title,
+            message,
+            type,
+            reference_id
+        )
+        VALUES (
+            request_row.requester_id,
+            'OD rejected by HOD',
+            COALESCE(
+                NULLIF(TRIM(p_comment), ''),
+                'Your OD request has been rejected by the HOD.'
+            ),
+            'HOD_REJECTED',
+            p_request_id
+        );
+
+
+        INSERT INTO public.audit_logs (
+            actor_id,
+            request_id,
+            action,
+            metadata
+        )
+        VALUES (
+            profile_row.id,
+            p_request_id,
+            'HOD_REJECTED',
+            jsonb_build_object(
+                'comment',
+                p_comment
+            )
+        );
+
+    END IF;
+
+END;
+$$;
+
+
+-- ============================================================
+-- 12. WITHDRAW OD
+-- ============================================================
+--
+-- Student can withdraw their own request only while it has
+-- not yet been finally approved/rejected.
+--
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.withdraw_od(
+    p_request_id UUID
+)
+RETURNS VOID
+LANGUAGE PLPGSQL
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    profile_row public.profiles;
+    request_row public.od_requests;
+BEGIN
+
+    SELECT *
+    INTO profile_row
+    FROM public.profiles
+    WHERE auth_user_id = auth.uid()
+      AND is_active = TRUE
+    LIMIT 1;
+
+
+    IF profile_row.id IS NULL THEN
+
+        RAISE EXCEPTION 'PROFILE_NOT_FOUND'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    SELECT *
+    INTO request_row
+    FROM public.od_requests
+    WHERE id = p_request_id
+    FOR UPDATE;
+
+
+    IF request_row.id IS NULL THEN
+
+        RAISE EXCEPTION 'REQUEST_NOT_FOUND'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF request_row.requester_id <> profile_row.id THEN
+
+        RAISE EXCEPTION 'FORBIDDEN'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    IF request_row.status NOT IN (
+        'PENDING_FACULTY',
+        'PENDING_HOD'
+    ) THEN
+
+        RAISE EXCEPTION 'CANNOT_WITHDRAW'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    UPDATE public.od_requests
+    SET
+        status = 'REJECTED_BY_FACULTY',
+        faculty_remarks = 'Withdrawn by requester.',
+        updated_at = NOW()
+    WHERE id = p_request_id;
+
+
+    INSERT INTO public.audit_logs (
+        actor_id,
+        request_id,
+        action,
+        metadata
+    )
+    VALUES (
+        profile_row.id,
+        p_request_id,
+        'OD_WITHDRAWN',
+        '{}'::jsonb
+    );
+
+END;
+$$;
+
+
+-- ============================================================
+-- 13. MARK NOTIFICATION READ
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION public.mark_notification_read(
+    p_notification_id UUID DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE PLPGSQL
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    profile_id UUID;
+BEGIN
+
+    SELECT public.current_profile_id()
+    INTO profile_id;
+
+
+    IF profile_id IS NULL THEN
+
+        RAISE EXCEPTION 'PROFILE_NOT_FOUND'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+
+    UPDATE public.notifications
+    SET is_read = TRUE
+    WHERE user_id = profile_id
+      AND (
+          p_notification_id IS NULL
+          OR id = p_notification_id
+      );
+
+
+    IF p_notification_id IS NOT NULL
+       AND NOT FOUND THEN
+
+        RAISE EXCEPTION 'NOT_FOUND'
+            USING ERRCODE = 'P0001';
+
+    END IF;
+
+END;
+$$;
+
+
+-- ============================================================
+-- 14. FUNCTION PERMISSIONS
+-- ============================================================
+
+REVOKE ALL
+ON FUNCTION public.current_profile()
+FROM PUBLIC, anon;
+
+
+REVOKE ALL
+ON FUNCTION public.current_role()
+FROM PUBLIC, anon;
+
+
+REVOKE ALL
+ON FUNCTION public.decide_faculty_od(UUID, BOOLEAN, TEXT)
+FROM PUBLIC, anon;
+
+
+REVOKE ALL
+ON FUNCTION public.decide_hod_od(UUID, BOOLEAN, TEXT)
+FROM PUBLIC, anon;
+
+
+REVOKE ALL
+ON FUNCTION public.withdraw_od(UUID)
+FROM PUBLIC, anon;
+
+
+REVOKE ALL
+ON FUNCTION public.mark_notification_read(UUID)
+FROM PUBLIC, anon;
+
+
+GRANT EXECUTE
+ON FUNCTION public.current_profile()
+TO authenticated;
+
+
+GRANT EXECUTE
+ON FUNCTION public.current_role()
+TO authenticated;
+
+
+GRANT EXECUTE
+ON FUNCTION public.decide_faculty_od(UUID, BOOLEAN, TEXT)
+TO authenticated;
+
+
+GRANT EXECUTE
+ON FUNCTION public.decide_hod_od(UUID, BOOLEAN, TEXT)
+TO authenticated;
+
+
+GRANT EXECUTE
+ON FUNCTION public.withdraw_od(UUID)
+TO authenticated;
+
+
+GRANT EXECUTE
+ON FUNCTION public.mark_notification_read(UUID)
+TO authenticated;
+
+
+-- ============================================================
+-- 15. AUDIT LOG PERMISSIONS
+-- ============================================================
+
+GRANT SELECT
+ON public.audit_logs
+TO authenticated;
+
+
+-- ============================================================
+-- 16. NOTIFICATION INSERTION
+-- ============================================================
+--
+-- Users must NOT be able to create fake notifications
+-- for themselves or other users.
+--
+-- Notifications are created by SECURITY DEFINER workflow
+-- functions.
+--
+-- ============================================================
+
+DROP POLICY IF EXISTS "notifications_admin_insert"
+ON public.notifications;
+
+
+CREATE POLICY "notifications_admin_insert"
+ON public.notifications
+FOR INSERT
+TO authenticated
+WITH CHECK (
+    public.has_admin_access()
+);
+
+
+-- ============================================================
+-- 17. NOTIFICATION READ
+-- ============================================================
+
+DROP POLICY IF EXISTS "notifications_read_own"
+ON public.notifications;
+
+CREATE POLICY "notifications_read_own"
+ON public.notifications
+FOR SELECT
+TO authenticated
+USING (
+    user_id = public.current_profile_id()
+);
+
+
+-- ============================================================
+-- 18. ROLE REQUEST HARDENING
+-- ============================================================
+
+DROP POLICY IF EXISTS "role_requests_hod_insert"
+ON public.role_requests;
+
+CREATE POLICY "role_requests_hod_insert"
+ON public.role_requests
+FOR INSERT
+TO authenticated
+WITH CHECK (
+
+    public.current_role() = 'hod'
+
+    AND requested_by = public.current_profile_id()
+
+    AND department_id = public.current_user_department()
+
+    AND requested_role = 'faculty'
+
+    AND status = 'PENDING'
+);
+
+
+-- ============================================================
+-- 19. FINAL SECURITY CHECK
+-- ============================================================
+
+SELECT
+    tablename,
+    rowsecurity
+FROM pg_tables
+WHERE schemaname = 'public'
+ORDER BY tablename;
+
+
+-- ============================================================
+-- 20. SHOW CREATED WORKFLOW FUNCTIONS
+-- ============================================================
+
+SELECT
+    routine_name
+FROM information_schema.routines
+WHERE routine_schema = 'public'
+AND routine_name IN (
+    'current_profile',
+    'current_role',
+    'decide_faculty_od',
+    'decide_hod_od',
+    'withdraw_od',
+    'mark_notification_read'
+)
+ORDER BY routine_name;

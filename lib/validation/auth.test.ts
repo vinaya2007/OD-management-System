@@ -16,7 +16,7 @@ describe("student registration validation", () => {
   });
 
   it("requires matching passwords and an allowed section", () => {
-    const base = { fullName: "Student Name", registerNumber: "RA24ECE001", department: "ECE", section: "A", email: "student@srmist.edu.in", password: "a-secure-password", confirmPassword: "a-secure-password" };
+    const base = { fullName: "Student Name", registerNumber: "RA24ECE001", departmentId: "11111111-1111-4111-8111-111111111111", section: "A", year: "II", email: "student@srmist.edu.in", password: "a-secure-password", confirmPassword: "a-secure-password" };
     expect(registerStudentSchema.safeParse(base).success).toBe(true);
     expect(registerStudentSchema.safeParse({ ...base, confirmPassword: "different-password" }).success).toBe(false);
     expect(registerStudentSchema.safeParse({ ...base, section: "C" }).success).toBe(false);

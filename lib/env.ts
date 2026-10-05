@@ -3,7 +3,6 @@ const requiredPublic = ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_K
 export const env = {
   appUrl: process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
   allowedEmailDomain: (process.env.ALLOWED_EMAIL_DOMAIN ?? "").trim().toLowerCase(),
-  demoAuthEnabled: process.env.ENABLE_DEMO_AUTH === "true",
   emailProvider: process.env.EMAIL_PROVIDER?.trim().toLowerCase(),
   emailFrom: process.env.EMAIL_FROM?.trim(),
   collegeName: process.env.COLLEGE_NAME?.trim() || "College",

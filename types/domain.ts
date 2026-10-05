@@ -32,6 +32,7 @@ export type Profile = {
   email: string;
   role: Role;
   department: string;
+  departmentName?: string;
   registerNumber?: string;
   year?: "I" | "II" | "III" | "IV";
   section?: string;
@@ -89,7 +90,8 @@ export type ODApplication = {
 };
 
 export type ODLimit = {
-  category: ODCategory;
+  /** When omitted, this is a department-wide limit shared across OD categories. */
+  category?: ODCategory;
   limitCount: number;
   academicYear: string;
   isActive: boolean;
@@ -136,7 +138,7 @@ export type ODAttendance = {
   id: string;
   odRequestId: string;
   studentId: string;
-  status: "PRESENT" | "ABSENT";
+  status: "NOT_MARKED" | "PRESENT" | "ABSENT";
   markedBy: string;
   markedAt: string;
 };

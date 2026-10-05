@@ -5,7 +5,7 @@ import { hasAllowedEmailDomain } from "@/lib/env";
 import { lookupAuthenticatedProfile } from "@/lib/auth-profile";
 
 export type DatabaseRole = "student" | "faculty" | "hod" | "admin";
-export type AuthenticatedProfile = { id: string; auth_user_id: string; full_name: string; name: string; email: string; role: DatabaseRole; department_id: string | null; is_active: boolean };
+export type AuthenticatedProfile = { id: string; auth_user_id: string; full_name: string; name: string; email: string; role: DatabaseRole; department_id: string | null; register_number: string | null; section: string | null; year: string | null; must_change_password: boolean; staff_setup_pending: boolean; designation?: string | null; is_active: boolean };
 
 export async function requireAuthenticatedUser(): Promise<AuthenticatedProfile> {
   const supabase = await createSupabaseServerClient();
