@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { randomUUID } from "node:crypto";
 import { requireAuthenticatedUser, requireFaculty, requireHod, requireStudent } from "@/lib/auth";
 import { AppError, publicError } from "@/lib/errors";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -12,7 +13,23 @@ async function callRpc(name: string, payload: Record<string, unknown>): Promise<
   try {
     const supabase = await createSupabaseServerClient();
     const { data, error } = await supabase.rpc(name, payload);
-    if (error) throw new AppError("DATABASE_ERROR", "The OD workflow could not be updated.");
+    if (error) {
+      console.error("[od-rpc] request failed", { operation: name, code: error.code, message: error.message, details: error.details, hint: error.hint });
+      const knownBusinessErrors = new Set([
+        "No active academic year is configured.",
+        "Required student identity details are missing from the OD record. Contact the ECE administrator.",
+        "Select OD students and faculty reviewers.", "OD category is required.", "Select a valid OD category.", "A purpose of at least 5 characters is required.", "Select at least one OD student.",
+        "An OD student cannot be selected more than once.", "One or more selected OD students are unavailable.",
+        "One or more faculty reviewers are unavailable.", "End time must be after start time.",
+        "Select a valid period range from 1 to 9.", "FORBIDDEN", "INVALID_STATUS_TRANSITION", "NOT_FOUND"
+      ]);
+      const message = error.code === "P0001" && knownBusinessErrors.has(error.message)
+        ? error.message === "No active academic year is configured."
+          ? "OD submission is unavailable because no active academic year is configured. Ask an Admin to set one under Settings."
+          : error.message
+        : process.env.NODE_ENV === "development" ? `${error.code}: ${error.message}` : "The OD workflow could not be updated. Please check the form and try again.";
+      throw new AppError("DATABASE_ERROR", message);
+    }
     revalidatePath("/");
     if (typeof data === "string") return { ok: true, id: data };
     if (data && typeof data === "object") {
@@ -28,9 +45,9 @@ export async function submitODAction(input: unknown): Promise<ActionResult> {
     await requireStudent();
     const parsed = submitODRequestSchema.parse(input);
     return callRpc("submit_od_request", { p_payload: {
-      id: parsed.id, idempotency_key: parsed.idempotencyKey, event_name: parsed.eventName, event_type: parsed.eventType,
-      organization: parsed.organization ?? null, event_date: parsed.eventDate, start_time: parsed.startTime,
-      end_time: parsed.endTime, venue: parsed.venue, purpose: parsed.purpose ?? null,
+      idempotency_key: randomUUID(), event_name: parsed.eventName, od_category: parsed.category, event_type: parsed.eventType,
+      organization: parsed.organization ?? null, event_date: parsed.eventDate, start_period: parsed.startPeriod, end_period: parsed.endPeriod, start_time: parsed.startTime,
+      end_time: parsed.endTime, venue: parsed.venue, reason: parsed.purpose, purpose: parsed.purpose,
       requester_remarks: parsed.requesterRemarks ?? null, student_ids: parsed.studentIds, faculty_ids: parsed.facultyIds
     }});
   } catch (error) { return { ok: false, ...publicError(error) }; }

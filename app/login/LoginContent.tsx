@@ -4,13 +4,11 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Eye, EyeOff, GraduationCap, ShieldCheck } from "lucide-react";
-import { useDemo } from "@/components/od/DemoProvider";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { srmistEmailSchema } from "@/lib/validation/auth";
 
-export default function LoginContent({ setupError, setupDetail = null }: { setupError: string | null; setupDetail?: string | null }) {
+export default function LoginContent({ setupError, setupDetail = null, collegeName, departmentName, allowedEmailDomain }: { setupError: string | null; setupDetail?: string | null; collegeName: string; departmentName: string; allowedEmailDomain: string }) {
   const router = useRouter();
-  const { collegeName, departmentName, allowedEmailDomain } = useDemo();
   const [message, setMessage] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -73,12 +71,14 @@ export default function LoginContent({ setupError, setupDetail = null }: { setup
             <p className="text-xs font-bold uppercase tracking-widest text-accent">SRMIST · ECE</p>
             <h2 className="mt-1 text-xl font-bold text-navy">Sign in to your college account</h2>
             <p className="mt-1 text-sm text-muted">Sign in with your verified {allowedEmailDomain || "college"} email account.</p>
-            {setupError === "profile" ? <p role="alert" className="mt-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900">Your college sign-in succeeded, but an active OD profile is not linked yet. Contact your department administrator to finish account setup.</p> : null}
+            {setupError === "profile-provisioning" ? <p role="alert" className="mt-3 rounded-md bg-red-50 p-3 text-sm text-red-800">Sign-in succeeded, but the OD system could not retrieve an active profile for this account. Access was not granted. Contact the system administrator and provide your college email.</p> : null}
             {setupError === "profile-query" ? <p role="alert" className="mt-3 rounded-md bg-red-50 p-3 text-sm text-red-800">We could not verify your OD profile because of a database query error.{setupDetail ? <span className="mt-1 block font-mono text-xs">{setupDetail}</span> : " Check the browser console during development for details."}</p> : null}
             {setupError === "domain" ? <p role="alert" className="mt-3 rounded-md bg-red-50 p-3 text-sm text-red-800"><strong>Access restricted. Please use your official SRMIST email address.</strong></p> : null}
             {setupError === "configuration" ? <p role="alert" className="mt-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900">Supabase sign-in is not configured. Add the project URL and anon key to the local environment.</p> : null}
-            {setupError === "authorization" ? <p role="alert" className="mt-3 rounded-md bg-red-50 p-3 text-sm text-red-800">This account does not have an active OD Management profile.</p> : null}
-            {["profile", "profile-query", "authorization"].includes(setupError ?? "") ? <form action="/auth/signout" method="post" className="mt-3"><button className="text-sm font-medium text-accent">Sign out of this account</button></form> : null}
+            {setupError === "authorization" ? <p role="alert" className="mt-3 rounded-md bg-red-50 p-3 text-sm text-red-800">This account is inactive and cannot access the OD system. Contact the system administrator.</p> : null}
+            {setupError === "invite-expired" ? <p role="alert" className="mt-3 rounded-md bg-amber-50 p-3 text-sm text-amber-900">This invitation link has expired or has already been used. Ask the ECE administrator to send a fresh invitation, then open the newest email link once.</p> : null}
+            {setupError === "invite-invalid" ? <p role="alert" className="mt-3 rounded-md bg-red-50 p-3 text-sm text-red-800">This account does not have a valid pending staff invitation. Ask the ECE administrator to send a new invitation.</p> : null}
+            {["profile-provisioning", "profile-query", "authorization"].includes(setupError ?? "") ? <form action="/auth/signout" method="post" className="mt-3"><button className="text-sm font-medium text-accent">Sign out of this account</button></form> : null}
             <form onSubmit={(event) => { event.preventDefault(); void signIn(); }} className="mt-5 grid gap-3">
               <label className="text-sm font-medium text-muted">College Email<input type="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-ink" /></label>
               <label className="text-sm font-medium text-muted">Password<span className="relative mt-1 block"><input type={showPassword ? "text" : "password"} autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} className="w-full rounded-lg border border-line px-3 py-2 pr-11 text-ink" /><button type="button" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? "Hide password" : "Show password"} className="absolute inset-y-0 right-0 flex items-center px-3 text-muted">{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></span></label>
@@ -94,3 +94,4 @@ export default function LoginContent({ setupError, setupDetail = null }: { setup
     </main>
   );
 }
+

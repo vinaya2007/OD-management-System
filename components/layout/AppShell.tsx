@@ -9,7 +9,7 @@ import type { Profile, Role } from "@/types/domain";
 
 const nav: Record<Role, { label: string; href: string }[]> = {
   student: [
-    { label: "Dashboard", href: "/student/dashboard" },
+    { label: "Dashboard", href: "/dashboard" },
     { label: "Apply for OD", href: "/student/apply" },
     { label: "My Applications", href: "/student/applications" },
     { label: "Requests Submitted By Me", href: "/student/submitted" },
@@ -44,7 +44,7 @@ const nav: Record<Role, { label: string; href: string }[]> = {
     { label: "Faculty", href: "/admin/faculty" },
     { label: "HODs", href: "/admin/hods" },
     { label: "Departments", href: "/admin/departments" },
-    { label: "OD Limits", href: "/admin/limits" },
+    { label: "OD Limits", href: "/admin/od-limits" },
     { label: "Settings", href: "/admin/settings" }
   ]
 };
@@ -59,7 +59,6 @@ export function AppShell({ user, children }: { user: Profile; children: React.Re
   const unreadCount = notifications.filter((item) => !item.isRead).length;
 
   async function logout() {
-    localStorage.removeItem("demoRole");
     if (isLive) await fetch("/auth/signout", { method: "POST" });
     router.push("/login");
     router.refresh();

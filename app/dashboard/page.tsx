@@ -1,6 +1,5 @@
-import { redirect } from "next/navigation";
-import { getAuthenticatedDestination } from "@/lib/auth-routing";
+import StudentDashboard from "@/app/student/dashboard/page";
 
-export default async function DashboardAliasPage() {
-  redirect(await getAuthenticatedDestination() ?? "/login");
+export default function DashboardPage() {
+  return <StudentDashboard />;
 }
