@@ -39,7 +39,7 @@ export function findOverlappingApplication(records: ODRecord[], studentId: strin
 }
 
 export function approvedUsage(records: ODRecord[], studentId: string, category: ODApplication["category"]) {
-  return records.filter((record) => (record.odStudentIds ?? [record.studentId]).includes(studentId) && record.category === category && record.status === "APPROVED").length;
+  return records.filter((record) => !record.isSpecial && (record.odStudentIds ?? [record.studentId]).includes(studentId) && record.category === category && record.status === "APPROVED").length;
 }
 
 export function getLimitState(records: ODRecord[], limits: ODLimit[], studentId: string, category: ODApplication["category"]) {
@@ -47,7 +47,7 @@ export function getLimitState(records: ODRecord[], limits: ODLimit[], studentId:
   const limit = categoryLimit ?? limits.find((item) => item.category === undefined && item.isActive);
   const used = categoryLimit
     ? approvedUsage(records, studentId, category)
-    : records.filter((record) => (record.odStudentIds ?? [record.studentId]).includes(studentId) && record.status === "APPROVED").length;
+    : records.filter((record) => !record.isSpecial && (record.odStudentIds ?? [record.studentId]).includes(studentId) && record.status === "APPROVED").length;
   return {
     used,
     allowed: limit?.limitCount ?? 0,

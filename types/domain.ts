@@ -16,14 +16,9 @@ export type ODStatus =
 export type FacultyApprovalStatus = "PENDING" | "APPROVED" | "CORRECTION_REQUESTED" | "REJECTED";
 export type SpecialPermissionStatus = "NOT_REQUIRED" | "PENDING" | "APPROVED" | "REJECTED";
 export type ODCategory =
-  | "Technical Event"
-  | "Non-Technical Event"
-  | "Hackathon"
-  | "Sports"
-  | "College Event"
-  | "Internship"
-  | "Club Organizer / Coordinator"
-  | "Other";
+  | "Non-Technical"
+  | "Technical"
+  | "Club Organizer / Volunteer";
 
 export type Profile = {
   id: string;
@@ -84,6 +79,8 @@ export type ODApplication = {
   additionalNotes?: string;
   isSpecial: boolean;
   specialPermissionStatus: SpecialPermissionStatus;
+  facultyApprovalStatus?: "PENDING" | "APPROVED" | "REJECTED" | "NOT_REQUIRED";
+  hodApprovalStatus?: "PENDING" | "APPROVED" | "REJECTED" | "NOT_REACHED";
   status: ODStatus;
   createdAt: string;
   updatedAt: string;

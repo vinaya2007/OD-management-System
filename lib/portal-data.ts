@@ -26,10 +26,12 @@ export function recordFromRequestRow(row: Row): ODRecord {
   const start = text(row.event_date);
   return {
     id: text(row.id), studentId: firstStudent.id, departmentId: text(row.department_id),
-    category: (text(row.event_type) || text(row.od_category) || "Other") as ODRecord["category"], purpose: text(row.purpose) || text(row.reason) || undefined,
+    category: (text(row.od_category) || "Non-Technical") as ODRecord["category"], purpose: text(row.purpose) || text(row.reason) || undefined,
     eventName: text(row.event_name), venueType: text(row.venue) === "Our College" ? "Our College" : "Other College",
     collegeName: text(row.organization) || undefined, startDate: start, endDate: text(row.event_end_date) || start,
-    additionalNotes: text(row.requester_remarks) || undefined, isSpecial: false, specialPermissionStatus: "NOT_REQUIRED",
+    additionalNotes: text(row.requester_remarks) || undefined, isSpecial: row.is_special_od === true, specialPermissionStatus: "NOT_REQUIRED",
+    facultyApprovalStatus: assigned.some((item) => text(item.status) === "REJECTED") ? "REJECTED" : assigned.length > 0 && assigned.every((item) => text(item.status) === "APPROVED") ? "APPROVED" : assigned.length > 0 ? "PENDING" : "NOT_REQUIRED",
+    hodApprovalStatus: text(row.status) === "PENDING_HOD" ? "PENDING" : text(row.status) === "APPROVED" ? "APPROVED" : text(row.status) === "REJECTED_BY_HOD" ? "REJECTED" : "NOT_REACHED",
     status: text(row.status) as ODRecord["status"], createdAt: text(row.created_at), updatedAt: text(row.updated_at),
     student: firstStudent, requester, odStudents: recipients, odStudentIds: recipients.map((profile) => profile.id),
     eventType: text(row.event_type), organization: text(row.organization) || undefined, eventDate: start,

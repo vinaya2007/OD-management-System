@@ -5,7 +5,7 @@ import type { ODRecord } from "@/types/domain";
 const period = (date: string, fromPeriod: number, toPeriod: number) => ({ id: "period", odId: "od-1", date, fromPeriod, toPeriod });
 
 const record = (status: ODRecord["status"], periods: ODRecord["periods"]): ODRecord => ({
-  id: "od-1", studentId: "student-1", departmentId: "ece", category: "Hackathon", eventName: "Event", venueType: "Our College",
+  id: "od-1", studentId: "student-1", departmentId: "ece", category: "Technical", eventName: "Event", venueType: "Our College",
   startDate: "2026-09-25", endDate: "2026-09-25", isSpecial: false, specialPermissionStatus: "NOT_REQUIRED", status,
   createdAt: "2026-09-01", updatedAt: "2026-09-01", student: { id: "student-1", name: "Student", email: "s@example.edu", role: "student", department: "ECE", isActive: true },
   periods, approvals: []
@@ -34,7 +34,13 @@ describe("OD business rules", () => {
 
   it("counts only approved applications toward limits", () => {
     const records = ["APPROVED", "SUBMITTED", "REJECTED", "WITHDRAWN"].map((status) => record(status as ODRecord["status"], []));
-    expect(approvedUsage(records, "student-1", "Hackathon")).toBe(1);
+    expect(approvedUsage(records, "student-1", "Technical")).toBe(1);
+  });
+
+  it("does not let an approved Special OD consume the normal category allowance", () => {
+    const regular = record("APPROVED", []);
+    const special = { ...record("APPROVED", []), id: "special-od", isSpecial: true };
+    expect(approvedUsage([regular, special], "student-1", "Technical")).toBe(1);
   });
 
   it("allows replacement only for pending faculty approvals", () => {
