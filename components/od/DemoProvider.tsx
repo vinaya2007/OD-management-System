@@ -2,15 +2,16 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
-import { decideFacultyODAction, decideHodODAction, decideSpecialPermissionAction, markODAttendanceAction, markNotificationsReadAction, replacePendingFacultyAction, submitODAction, withdrawODAction } from "@/app/actions/od";
+import { decideFacultyODAction, decideHodODAction, markODAttendanceAction, markNotificationsReadAction, replacePendingFacultyAction, submitODAction, withdrawODAction } from "@/app/actions/od";
+import { submitSpecialODAction } from "@/app/actions/special-od";
 import type { FacultyApprovalStatus, Notification, ODCategory, ODLimit, ODRecord, Profile } from "@/types/domain";
 
-type DraftInput = { studentIds: string[]; category: ODCategory; eventType: string; eventName: string; organization?: string; eventDate: string; startPeriod: number; endPeriod: number; startTime: string; endTime: string; venue: string; purpose?: string; requesterRemarks?: string; facultyIds: string[] };
+type DraftInput = { category: ODCategory; eventType: string; eventName: string; organization?: string; eventDate: string; startPeriod: number; endPeriod: number; startTime: string; endTime: string; venue: string; purpose?: string; requesterRemarks?: string; facultyIds: string[] };
 type PortalPayload = { currentUser: Profile; profiles: Profile[]; applications: ODRecord[]; notifications: Notification[]; limits: ODLimit[] };
 type Result = { ok: true; id: string } | { ok: false; reason: string; existingId?: string };
 type PortalContextValue = PortalPayload & {
   isLive: true; collegeName: string; departmentName: string; allowedEmailDomain: string;
-  refresh(): Promise<void>; markNotificationsRead(notificationId?: string): Promise<void>; specialPermissionDecision(odId: string, approved: boolean, reason?: string): Promise<void>; createApplication(input: DraftInput): Promise<Result>; updateFacultyApproval(odId: string, facultyId: string, status: FacultyApprovalStatus, comment?: string): Promise<void>; replaceFaculty(odId: string, approvalId: string, facultyId: string): Promise<void>; hodDecision(odId: string, approved: boolean, reason?: string): Promise<void>; markAttendance(requestId: string, studentId: string, status: "PRESENT" | "ABSENT"): Promise<void>; withdraw(odId: string): Promise<void>;
+  refresh(): Promise<void>; markNotificationsRead(notificationId?: string): Promise<void>; createApplication(input: DraftInput): Promise<Result>; createSpecialApplication(input: DraftInput): Promise<Result>; updateFacultyApproval(odId: string, facultyId: string, status: FacultyApprovalStatus, comment?: string): Promise<void>; replaceFaculty(odId: string, approvalId: string, facultyId: string): Promise<void>; hodDecision(odId: string, approved: boolean, reason?: string): Promise<void>; markAttendance(requestId: string, studentId: string, status: "PRESENT" | "ABSENT"): Promise<void>; withdraw(odId: string): Promise<void>;
 };
 const PortalContext = createContext<PortalContextValue | null>(null);
 // Staff setup is a pre-profile onboarding route. The page itself verifies the
@@ -49,13 +50,14 @@ export function DemoProvider({ children, collegeName, departmentName, allowedEma
       if (!result.ok) throw new Error(result.message);
       await refresh();
     },
-    async specialPermissionDecision(odId, approved, reason) {
-      const result = await decideSpecialPermissionAction({ odId, approved, comment: reason });
-      if (!result.ok) throw new Error(result.message);
-      await refresh();
-    },
     async createApplication(input) {
       const result = await submitODAction(input);
+      if (!result.ok) return { ok: false as const, reason: result.message };
+      await refresh();
+      return { ok: true as const, id: result.id! };
+    },
+    async createSpecialApplication(input) {
+      const result = await submitSpecialODAction(input);
       if (!result.ok) return { ok: false as const, reason: result.message };
       await refresh();
       return { ok: true as const, id: result.id! };

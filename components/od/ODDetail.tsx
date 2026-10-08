@@ -22,7 +22,7 @@ export function ODDetail({ record, faculty, onReplaceFaculty, onWithdraw, viewer
           <Info label="Organization" value={record.organization ?? record.collegeName ?? "—"} />
           <Info label="Venue" value={record.venue ?? (record.venueType === "Other College" ? `${record.venueType} · ${record.collegeName}` : record.venueType)} />
           <Info label="Date and time" value={`${record.eventDate ?? record.startDate}${record.startTime ? ` · ${record.startTime}–${record.endTime}` : ""}`} />
-          <Info label="Special Permission" value={record.specialPermissionStatus.replaceAll("_", " ")} />
+          <Info label="OD Type" value={record.isSpecial ? "Special OD" : "Regular OD"} />
         </dl>
         {record.purpose || record.additionalNotes ? <p className="mt-5 rounded-lg bg-slate-50 p-4 text-sm text-slate-700">{[record.purpose, record.additionalNotes].filter(Boolean).join(" · ")}</p> : null}
         {record.potentialDuplicate ? <p className="mt-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">A similar event request already exists for at least one selected student and time. This request was kept for review.</p> : null}

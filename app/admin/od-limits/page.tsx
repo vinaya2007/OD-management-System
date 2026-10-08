@@ -1,2 +1,2 @@
-import { AdminDataPage } from "@/components/admin/AdminDataPage";
-export default function Page() { return <AdminDataPage section="od-limits" />; }
+import { notFound } from "next/navigation";
+export default function Page() { notFound(); }

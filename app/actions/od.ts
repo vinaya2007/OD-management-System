@@ -18,8 +18,8 @@ async function callRpc(name: string, payload: Record<string, unknown>): Promise<
       const knownBusinessErrors = new Set([
         "No active academic year is configured.",
         "Required student identity details are missing from the OD record. Contact the ECE administrator.",
-        "Select OD students and faculty reviewers.", "OD category is required.", "Select a valid OD category.", "A purpose of at least 5 characters is required.", "Select at least one OD student.",
-        "An OD student cannot be selected more than once.", "One or more selected OD students are unavailable.",
+        "Select at least one faculty reviewer.", "Select one to three faculty reviewers.", "OD category is required.", "Select a valid OD category.", "A purpose of at least 5 characters is required.",
+        "OD limit reached for this category.",
         "One or more faculty reviewers are unavailable.", "End time must be after start time.",
         "Select a valid period range from 1 to 9.", "FORBIDDEN", "INVALID_STATUS_TRANSITION", "NOT_FOUND"
       ]);
@@ -48,7 +48,7 @@ export async function submitODAction(input: unknown): Promise<ActionResult> {
       idempotency_key: randomUUID(), event_name: parsed.eventName, od_category: parsed.category, event_type: parsed.eventType,
       organization: parsed.organization ?? null, event_date: parsed.eventDate, start_period: parsed.startPeriod, end_period: parsed.endPeriod, start_time: parsed.startTime,
       end_time: parsed.endTime, venue: parsed.venue, reason: parsed.purpose, purpose: parsed.purpose,
-      requester_remarks: parsed.requesterRemarks ?? null, student_ids: parsed.studentIds, faculty_ids: parsed.facultyIds
+      requester_remarks: parsed.requesterRemarks ?? null, faculty_ids: parsed.facultyIds
     }});
   } catch (error) { return { ok: false, ...publicError(error) }; }
 }
@@ -63,12 +63,14 @@ export async function decideHodODAction(input: unknown): Promise<ActionResult> {
   catch (error) { return { ok: false, ...publicError(error) }; }
 }
 
-export async function decideSpecialPermissionAction(input: unknown): Promise<ActionResult> {
-  try {
-    await requireHod();
-    const parsed = hodDecisionSchema.parse(input);
-    return callRpc("decide_special_permission", { p_od_id: parsed.odId, p_approved: parsed.approved, p_comment: parsed.comment ?? null });
-  } catch (error) { return { ok: false, ...publicError(error) }; }
+export async function decideSpecialFacultyODAction(input: unknown): Promise<ActionResult> {
+  try { await requireFaculty(); const parsed = hodDecisionSchema.parse(input); return callRpc("decide_special_od_faculty", { p_request_id: parsed.odId, p_approved: parsed.approved, p_remarks: parsed.comment ?? null }); }
+  catch (error) { return { ok: false, ...publicError(error) }; }
+}
+
+export async function decideSpecialHodODAction(input: unknown): Promise<ActionResult> {
+  try { await requireHod(); const parsed = hodDecisionSchema.parse(input); return callRpc("decide_special_od_hod", { p_request_id: parsed.odId, p_approved: parsed.approved, p_remarks: parsed.comment ?? null }); }
+  catch (error) { return { ok: false, ...publicError(error) }; }
 }
 
 export async function replacePendingFacultyAction(input: unknown): Promise<ActionResult> {

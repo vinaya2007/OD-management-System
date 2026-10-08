@@ -11,7 +11,7 @@ export default function LimitsPage() {
       <h2 className="text-2xl font-bold text-navy">OD Limits</h2>
       <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {limits.map((limit) => {
-          const state = getLimitState(applications, limits, currentUser.id, limit.category ?? "Other");
+          const state = getLimitState(applications, limits, currentUser.id, limit.category ?? "Non-Technical");
           return (
             <div key={`${limit.category ?? "all"}-${limit.academicYear}`} className="rounded-lg border border-line bg-white p-5 shadow-soft">
               <p className="font-semibold text-navy">{limit.category ?? "All OD categories"}</p>

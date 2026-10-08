@@ -8,7 +8,7 @@ import { SummaryCard } from "@/components/od/SummaryCard";
 
 export default function FacultyDashboard() {
   const { currentUser, applications } = useDemo();
-  const assigned = applications.filter((item) => item.approvals.some((approval) => approval.facultyId === currentUser.id));
+  const assigned = applications.filter((item) => !item.isSpecial && item.approvals.some((approval) => approval.facultyId === currentUser.id));
   return (
     <AppShell user={currentUser}>
       <h2 className="mb-5 text-2xl font-bold text-navy">Faculty Dashboard</h2>

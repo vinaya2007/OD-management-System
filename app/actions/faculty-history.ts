@@ -15,6 +15,7 @@ export type FacultyHistoryEntry = {
   reason: string;
   actionAt: string;
   status: string;
+  isSpecial: boolean;
   remarks: string | null;
   students: { name: string; registerNumber: string }[];
 };
@@ -33,6 +34,7 @@ type HistoryRow = {
     purpose: string | null;
     event_date: string;
     status: string;
+    is_special_od: boolean;
     od_request_students: { student: { full_name: string; register_number: string | null } | null }[];
   };
 };
@@ -46,7 +48,7 @@ export async function getFacultyActionHistoryAction(kind: FacultyHistoryKind, pa
     const supabase = await createSupabaseServerClient();
     const action = kind === "approved" ? "FACULTY_APPROVED" : "FACULTY_REJECTED";
     const { data, error } = await supabase.from("od_approval_history")
-      .select("id,od_request_id,action,created_at,remarks,request:od_requests!inner(id,od_number,event_name,od_category,reason,purpose,event_date,status,od_request_students(student:profiles!student_id(full_name,register_number)))")
+      .select("id,od_request_id,action,created_at,remarks,request:od_requests!inner(id,od_number,event_name,od_category,reason,purpose,event_date,status,is_special_od,od_request_students(student:profiles!student_id(full_name,register_number)))")
       .eq("actor_id", faculty.id)
       .eq("actor_role", "faculty")
       .eq("action", action)
@@ -70,6 +72,7 @@ export async function getFacultyActionHistoryAction(kind: FacultyHistoryKind, pa
         reason: row.request.purpose || row.request.reason || "",
         actionAt: row.created_at,
         status: row.request.status,
+        isSpecial: row.request.is_special_od === true,
         remarks: row.action === "FACULTY_REJECTED" ? row.remarks : null,
         students: (row.request.od_request_students ?? []).map(({ student }) => ({
           name: student?.full_name ?? "Student",

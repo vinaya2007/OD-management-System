@@ -54,7 +54,7 @@ export function FacultyActionHistory({ kind }: { kind: FacultyHistoryKind }) {
     {busy ? <p className="mt-5 rounded-lg border border-line bg-white p-6 text-sm text-muted">Loading your action history…</p>
       : entries.length ? <div className="mt-5 space-y-4">{entries.map((entry) => <article key={entry.id} className="rounded-lg border border-line bg-white p-5 shadow-soft">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div><p className="text-xs font-semibold uppercase tracking-wide text-accent">OD {entry.reference}</p><h3 className="mt-1 text-lg font-bold text-navy">{entry.eventName}</h3></div>
+          <div><p className="text-xs font-semibold uppercase tracking-wide text-accent">{entry.isSpecial ? "Special OD" : "OD"} {entry.reference}</p><h3 className="mt-1 text-lg font-bold text-navy">{entry.eventName}</h3></div>
           <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-ink">{entry.status.replaceAll("_", " ")}</span>
         </div>
         <dl className="mt-4 grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">

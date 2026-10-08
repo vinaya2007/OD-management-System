@@ -6,5 +6,5 @@ import { ODTable } from "@/components/od/ODTable";
 
 export default function HodApprovalsPage() {
   const { currentUser, applications } = useDemo();
-  return <AppShell user={currentUser}><h2 className="mb-4 text-2xl font-bold text-navy">Pending HOD Approvals</h2><ODTable records={applications.filter((item) => item.status === "PENDING_HOD")} role="hod" /></AppShell>;
+  return <AppShell user={currentUser}><h2 className="mb-4 text-2xl font-bold text-navy">Pending HOD Approvals</h2><ODTable records={applications.filter((item) => !item.isSpecial && item.status === "PENDING_HOD")} role="hod" /></AppShell>;
 }

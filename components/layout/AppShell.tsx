@@ -21,6 +21,7 @@ const nav: Record<Role, { label: string; href: string }[]> = {
   faculty: [
     { label: "Dashboard", href: "/faculty/dashboard" },
     { label: "Pending Approvals", href: "/faculty/approvals" },
+    { label: "Special ODs", href: "/faculty/special" },
     { label: "Approved ODs", href: "/faculty/approved" },
     { label: "Attendance", href: "/faculty/attendance" },
     { label: "Rejected ODs", href: "/faculty/rejected" },
@@ -34,6 +35,7 @@ const nav: Record<Role, { label: string; href: string }[]> = {
     { label: "All ODs", href: "/hod/all" },
     { label: "Special ODs", href: "/hod/special" },
     { label: "Consolidated OD", href: "/hod/consolidated" },
+    { label: "OD Limits", href: "/hod/limits" },
     { label: "Reports", href: "/hod/reports" },
     { label: "Profile", href: "/hod/profile" }
   ],
@@ -44,7 +46,6 @@ const nav: Record<Role, { label: string; href: string }[]> = {
     { label: "Faculty", href: "/admin/faculty" },
     { label: "HODs", href: "/admin/hods" },
     { label: "Departments", href: "/admin/departments" },
-    { label: "OD Limits", href: "/admin/od-limits" },
     { label: "Settings", href: "/admin/settings" }
   ]
 };

@@ -16,6 +16,7 @@ export type HodODRow = {
   status: string;
   facultyStatus: string;
   hodStatus: string;
+  isSpecial: boolean;
   students: Array<{ name: string; registerNumber: string; section: string }>;
 };
 
@@ -44,7 +45,7 @@ async function loadDepartmentRequests() {
   for (let page = 0; page < 100; page += 1) {
     const { data, error } = await supabase
       .from("od_requests")
-      .select("id,od_number,department_id,od_category,event_date,reason,purpose,status,created_at,department:departments(name,code),requester:profiles!requester_id(full_name,register_number,section),od_request_students(request_id,student:profiles!student_id(full_name,register_number,section)),od_request_faculty(status)")
+      .select("id,od_number,department_id,od_category,event_date,reason,purpose,status,is_special_od,created_at,department:departments(name,code),requester:profiles!requester_id(full_name,register_number,section),od_request_students(request_id,student:profiles!student_id(full_name,register_number,section)),od_request_faculty(status)")
       .eq("department_id", actor.department_id)
       .order("created_at", { ascending: false })
       .range(page * 1000, page * 1000 + 999);
@@ -73,6 +74,7 @@ async function loadDepartmentRequests() {
       reason: String(row.purpose || row.reason || ""), status,
       facultyStatus,
       hodStatus: status === "PENDING_HOD" ? "Pending" : status === "APPROVED" ? "Approved" : status === "REJECTED_BY_HOD" ? "Rejected" : "Not reached",
+      isSpecial: row.is_special_od === true,
       students: people.map((person) => ({ name: person.full_name || "—", registerNumber: person.register_number || "—", section: person.section || "—" }))
     } satisfies HodODRow;
   });
@@ -97,9 +99,7 @@ export async function getHodDepartmentReportsAction(): Promise<Result<HodReports
       pendingHod: count((row) => row.status === "PENDING_HOD"),
       approved: count((row) => row.status === "APPROVED"),
       rejected: count((row) => ["REJECTED", "REJECTED_BY_FACULTY", "REJECTED_BY_HOD"].includes(row.status)),
-      // The current schema has no special-OD flag or special-permission table.
-      // Treat only a category literally stored as a special category as special.
-      special: count((row) => row.category.toLowerCase().includes("special")),
+      special: count((row) => row.isSpecial),
       categories: group((row) => row.category),
       sections: groupStudentSections(rows),
       months: group((row) => row.date.length >= 7 ? row.date.slice(0, 7) : "Unspecified"),

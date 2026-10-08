@@ -4,6 +4,7 @@ import { useState } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import { FacultyActionHistory } from "@/components/faculty/FacultyActionHistory";
 import { HodSecondarySection } from "@/components/hod/HodSecondarySection";
+import { SpecialODQueue } from "@/components/od/SpecialODQueue";
 import { useDemo } from "@/components/od/DemoProvider";
 
 export function SecondaryPageContent({ section }: { section: string }) {
@@ -12,7 +13,7 @@ export function SecondaryPageContent({ section }: { section: string }) {
   const [marking, setMarking] = useState(false);
   const title = section.split("-").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
   const isStudentSection = currentUser.role === "student" && (section === "profile" || section === "notifications");
-  const isFacultySection = currentUser.role === "faculty" && ["approved", "rejected", "profile", "notifications"].includes(section);
+  const isFacultySection = currentUser.role === "faculty" && ["approved", "rejected", "special", "profile", "notifications"].includes(section);
   const isHodProfile = currentUser.role === "hod" && section === "profile";
   const isHodDataSection = currentUser.role === "hod" && ["all", "special", "reports"].includes(section);
 
@@ -47,6 +48,7 @@ export function SecondaryPageContent({ section }: { section: string }) {
 
       {isFacultySection && section === "approved" ? <FacultyActionHistory kind="approved" /> : null}
       {isFacultySection && section === "rejected" ? <FacultyActionHistory kind="rejected" /> : null}
+      {isFacultySection && section === "special" ? <SpecialODQueue role="faculty" /> : null}
 
       {isFacultySection && section === "profile" ? <section className="max-w-3xl rounded-lg border border-line bg-white p-6 shadow-soft">
         <h2 className="text-2xl font-bold text-navy">Profile</h2>
@@ -74,7 +76,8 @@ export function SecondaryPageContent({ section }: { section: string }) {
         </dl>
       </section> : null}
 
-      {isHodDataSection ? <HodSecondarySection section={section as "all" | "special" | "reports"} /> : null}
+      {isHodDataSection && section === "special" ? <SpecialODQueue role="hod" /> : null}
+      {isHodDataSection && section !== "special" ? <HodSecondarySection section={section as "all" | "reports"} /> : null}
 
       {(isStudentSection || isFacultySection) && section === "notifications" ? <section className="max-w-4xl">
         <div className="flex flex-wrap items-center justify-between gap-3">
